@@ -31,36 +31,6 @@
 /* THE CLASSES BELOW CAN APPEAR ANYWHERE IN THE DOM (POSSIBLEY OUTSIDE OF
    THE WIDGET AREA). */
 
-.widget-hlabel {
-    /* Horizontal Label */
-    min-width      : 10ex;
-    padding-right  : 8px;
-    padding-top    : 3px;
-    text-align     : right;
-    vertical-align : text-top;
-}
-
-.widget-vlabel {
-    /* Vertical Label */
-    padding-bottom : 5px;
-    text-align     : center;
-    vertical-align : text-bottom;
-}
-
-.widget-hreadout {
-    padding-left   : 8px;
-    padding-top    : 3px;
-    text-align     : left;
-    vertical-align : text-top;
-}
-
-.widget-vreadout {
-    /* Vertical Label */
-    padding-top : 5px;
-    text-align     : center;
-    vertical-align : text-top;
-}
-
 .slide-track {
     /* Slider Track */
     border     : 1px solid #CCCCCC;
@@ -97,10 +67,10 @@
     overflow      : visible;
 
     /* Default size of the slider */
-    width        : 348px; 
+    width        : 350px; 
     height       : 5px;
     max-height   : 5px;
-    margin-top   : 11px;
+    margin-top   : 13px;
     margin-bottom: 10px;
     
     /* Style the slider track */
@@ -121,6 +91,11 @@
             width      : 14px !important;
             height     : 28px !important;
             margin-top : -8px !important;
+        }
+
+        .ui-slider-range {
+            height     : 12px !important;
+            margin-top : -4px !important;
         }
     }
 }
@@ -160,6 +135,11 @@
             height      : 14px !important;
             margin-left : -9px;
         }
+
+        .ui-slider-range {
+            width       : 12px !important;
+            margin-left : -1px !important;
+        }
     }
 }
 
@@ -171,7 +151,7 @@
 
 .widget-listbox {
     /* Listbox */
-    width         : 364px;
+    width         : 350px;
     margin-bottom : 0px;
 }
 
@@ -183,9 +163,10 @@
 
 .widget-progress {
     /* Progress Bar */
-    width : 363px;
+    margin-top: 6px;
+    width : 350px;
 
-    .bar {
+    .progress-bar {
         /* Disable progress bar animation */
         -webkit-transition : none;
         -moz-transition    : none;
@@ -197,53 +178,62 @@
 
 .widget-combo-btn {
     /* ComboBox Main Button */
-    min-width : 138px; /* + 26px drop arrow btn = 164px */
+    min-width : 125px;
 }
 
-.widget-box {
-    /* The following section sets the style for the invisible div that
-    hold widgets and their accompanying labels.
-
-    Looks like this:
-    +-----------------------------+
-    | widget-box (or similar)     |
-    |  +-------+---------------+  |
-    |  | Label | Actual Widget |  |
-    |  +-------+---------------+  |
-    +-----------------------------+
-    */
-    margin : 5px;
-
-    .start();
-    .widget-container();
+.widget_item .dropdown-menu li a {
+    color: inherit;
 }
 
 .widget-hbox {
     /* Horizontal widgets */
-    .widget-box();
     .hbox();
-}
+    margin: 5px;
 
-.widget-hbox-single {
-    /* Single line horizontal widgets */
-    .widget-hbox();
-    height : 30px;
+    input[type="checkbox"] {
+        margin-top: 9px;
+    }
+
+    .widget-label {
+        /* Horizontal Label */
+        min-width      : 10ex;
+        padding-right  : 8px;
+        padding-top    : 5px;
+        text-align     : right;
+        vertical-align : text-top;
+    }
+
+    .widget-readout {
+        padding-left   : 8px;
+        padding-top    : 5px;
+        text-align     : left;
+        vertical-align : text-top;
+    }
 }
 
 .widget-vbox {
     /* Vertical widgets */ 
-    .widget-box();
     .vbox();
-}
 
-.widget-vbox-single {
-    /* For vertical slides */ 
-    .widget-vbox();
-    width : 30px;
+
+    .widget-label {
+        /* Vertical Label */
+        padding-bottom : 5px;
+        text-align     : center;
+        vertical-align : text-bottom;
+    }
+
+    .widget-readout {
+        /* Vertical Label */
+        padding-top : 5px;
+        text-align     : center;
+        vertical-align : text-top;
+    }
+
 }
 
 .widget-modal {
-    /* ContainerWidget - ModalView */   
+    /* Box - ModalView */   
     overflow    : hidden; 
     position    : absolute !important;
     top         : 0px; 
@@ -252,12 +242,12 @@
 }
 
 .widget-modal-body {
-    /* ContainerWidget - ModalView Body */
+    /* Box - ModalView Body */
     max-height: none !important;
 }
 
-.widget-container {
-    /* ContainerWidget */
+.widget-box {
+    /* Box */
     .border-box-sizing();
     .align-start();
 }
@@ -268,6 +258,10 @@
     .border-box-sizing();
     
     padding-top: 4px;
+
+    label {
+        margin-top: 0px;
+    }
 }
 
 .docked-widget-modal {

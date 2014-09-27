@@ -1,25 +1,7 @@
-"""The official API for working with notebooks in the current format version.
-
-Authors:
-
-* Brian Granger
-* Jonathan Frederic
-"""
-
-#-----------------------------------------------------------------------------
-#  Copyright (C) 2008-2011  The IPython Development Team
-#
-#  Distributed under the terms of the BSD License.  The full license is in
-#  the file COPYING, distributed as part of this software.
-#-----------------------------------------------------------------------------
-
-#-----------------------------------------------------------------------------
-# Imports
-#-----------------------------------------------------------------------------
+"""The official API for working with notebooks in the current format version."""
 
 from __future__ import print_function
 
-from xml.etree import ElementTree as ET
 import re
 
 from IPython.utils.py3compat import unicode_type
@@ -28,30 +10,27 @@ from IPython.nbformat.v3 import (
     NotebookNode,
     new_code_cell, new_text_cell, new_notebook, new_output, new_worksheet,
     parse_filename, new_metadata, new_author, new_heading_cell, nbformat,
-    nbformat_minor, to_notebook_json
+    nbformat_minor, nbformat_schema, to_notebook_json
 )
 from IPython.nbformat import v3 as _v_latest
 
 from .reader import reads as reader_reads
 from .reader import versions
 from .convert import convert
+from .validator import validate
 
-#-----------------------------------------------------------------------------
-# Code
-#-----------------------------------------------------------------------------
+from IPython.utils.log import get_logger
+
+__all__ = ['NotebookNode', 'new_code_cell', 'new_text_cell', 'new_notebook',
+'new_output', 'new_worksheet', 'parse_filename', 'new_metadata', 'new_author',
+'new_heading_cell', 'nbformat', 'nbformat_minor', 'nbformat_schema',
+'to_notebook_json', 'convert', 'validate', 'NBFormatError', 'parse_py',
+'reads_json', 'writes_json', 'reads_py', 'writes_py', 'reads', 'writes', 'read',
+'write']
 
 current_nbformat = nbformat
 current_nbformat_minor = nbformat_minor
 current_nbformat_module = _v_latest.__name__
-
-def docstring_nbformat_mod(func):
-    """Decorator for docstrings referring to classes/functions accessed through
-    nbformat.current.
-
-    Put {nbformat_mod} in the docstring in place of 'IPython.nbformat.v3'.
-    """
-    func.__doc__ = func.__doc__.format(nbformat_mod=current_nbformat_module)
-    return func
 
 
 class NBFormatError(ValueError):
@@ -74,13 +53,33 @@ def parse_py(s, **kwargs):
     return nbf, nbm, s
 
 
-def reads_json(s, **kwargs):
-    """Read a JSON notebook from a string and return the NotebookNode object."""
-    return convert(reader_reads(s), current_nbformat)
+def reads_json(nbjson, **kwargs):
+    """Read a JSON notebook from a string and return the NotebookNode
+    object. Report if any JSON format errors are detected.
+
+    """
+    nb = reader_reads(nbjson, **kwargs)
+    nb_current = convert(nb, current_nbformat)
+    errors = validate(nb_current)
+    if errors:
+        get_logger().error(
+            "Notebook JSON is invalid (%d errors detected during read)",
+            len(errors))
+    return nb_current
 
 
 def writes_json(nb, **kwargs):
-    return versions[current_nbformat].writes_json(nb, **kwargs)
+    """Take a NotebookNode object and write out a JSON string. Report if
+    any JSON format errors are detected.
+
+    """
+    errors = validate(nb)
+    if errors:
+        get_logger().error(
+            "Notebook JSON is invalid (%d errors detected during write)",
+            len(errors))
+    nbjson = versions[current_nbformat].writes_json(nb, **kwargs)
+    return nbjson
 
 
 def reads_py(s, **kwargs):

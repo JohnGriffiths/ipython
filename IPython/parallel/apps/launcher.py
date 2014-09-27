@@ -1,23 +1,8 @@
 # encoding: utf-8
-"""
-Facilities for launching IPython processes asynchronously.
+"""Facilities for launching IPython processes asynchronously."""
 
-Authors:
-
-* Brian Granger
-* MinRK
-"""
-
-#-----------------------------------------------------------------------------
-#  Copyright (C) 2008-2011  The IPython Development Team
-#
-#  Distributed under the terms of the BSD License.  The full license is in
-#  the file COPYING, distributed as part of this software.
-#-----------------------------------------------------------------------------
-
-#-----------------------------------------------------------------------------
-# Imports
-#-----------------------------------------------------------------------------
+# Copyright (c) IPython Development Team.
+# Distributed under the terms of the Modified BSD License.
 
 import copy
 import logging
@@ -62,7 +47,7 @@ from IPython.utils.traitlets import (
     Any, Integer, CFloat, List, Unicode, Dict, Instance, HasTraits, CRegExp
 )
 from IPython.utils.encoding import DEFAULT_ENCODING
-from IPython.utils.path import get_home_dir
+from IPython.utils.path import get_home_dir, ensure_dir_exists
 from IPython.utils.process import find_cmd, FindCmdError
 from IPython.utils.py3compat import iteritems, itervalues
 
@@ -593,7 +578,7 @@ class SSHLauncher(LocalProcessLauncher):
     
     def _send_file(self, local, remote):
         """send a single file"""
-        remote = "%s:%s" % (self.location, remote)
+        full_remote = "%s:%s" % (self.location, remote)
         for i in range(10):
             if not os.path.exists(local):
                 self.log.debug("waiting for %s" % local)
@@ -605,8 +590,8 @@ class SSHLauncher(LocalProcessLauncher):
         check_output(self.ssh_cmd + self.ssh_args + \
             [self.location, 'mkdir', '-p', '--', remote_dir]
         )
-        self.log.info("sending %s to %s", local, remote)
-        check_output(self.scp_cmd + [local, remote])
+        self.log.info("sending %s to %s", local, full_remote)
+        check_output(self.scp_cmd + [local, full_remote])
     
     def send_files(self):
         """send our files (called before start)"""
@@ -629,8 +614,7 @@ class SSHLauncher(LocalProcessLauncher):
             elif check == u'yes':
                 break
         local_dir = os.path.dirname(local)
-        if not os.path.exists(local_dir):
-            os.makedirs(local_dir, 775)
+        ensure_dir_exists(local_dir, 775)
         check_output(self.scp_cmd + [full_remote, local])
     
     def fetch_files(self):

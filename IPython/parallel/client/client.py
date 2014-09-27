@@ -1,20 +1,9 @@
-"""A semi-synchronous Client for the ZMQ cluster
+"""A semi-synchronous Client for IPython parallel"""
 
-Authors:
+# Copyright (c) IPython Development Team.
+# Distributed under the terms of the Modified BSD License.
 
-* MinRK
-"""
 from __future__ import print_function
-#-----------------------------------------------------------------------------
-#  Copyright (C) 2010-2011  The IPython Development Team
-#
-#  Distributed under the terms of the BSD License.  The full license is in
-#  the file COPYING, distributed as part of this software.
-#-----------------------------------------------------------------------------
-
-#-----------------------------------------------------------------------------
-# Imports
-#-----------------------------------------------------------------------------
 
 import os
 import json
@@ -29,7 +18,6 @@ from pprint import pprint
 pjoin = os.path.join
 
 import zmq
-# from zmq.eventloop import ioloop, zmqstream
 
 from IPython.config.configurable import MultipleInstanceError
 from IPython.core.application import BaseIPythonApplication
@@ -44,7 +32,6 @@ from IPython.utils.py3compat import cast_bytes, string_types, xrange, iteritems
 from IPython.utils.traitlets import (HasTraits, Integer, Instance, Unicode,
                                     Dict, List, Bool, Set, Any)
 from IPython.external.decorator import decorator
-from IPython.external.ssh import tunnel
 
 from IPython.parallel import Reference
 from IPython.parallel import error
@@ -84,25 +71,25 @@ class ExecuteReply(RichOutput):
     
     @property
     def source(self):
-        pyout = self.metadata['pyout']
-        if pyout:
-            return pyout.get('source', '')
+        execute_result = self.metadata['execute_result']
+        if execute_result:
+            return execute_result.get('source', '')
     
     @property
     def data(self):
-        pyout = self.metadata['pyout']
-        if pyout:
-            return pyout.get('data', {})
+        execute_result = self.metadata['execute_result']
+        if execute_result:
+            return execute_result.get('data', {})
     
     @property
     def _metadata(self):
-        pyout = self.metadata['pyout']
-        if pyout:
-            return pyout.get('metadata', {})
+        execute_result = self.metadata['execute_result']
+        if execute_result:
+            return execute_result.get('metadata', {})
     
     def display(self):
         from IPython.display import publish_display_data
-        publish_display_data(self.source, self.data, self.metadata)
+        publish_display_data(self.data, self.metadata)
     
     def _repr_mime_(self, mime):
         if mime not in self.data:
@@ -122,16 +109,16 @@ class ExecuteReply(RichOutput):
         return self.metadata[key]
     
     def __repr__(self):
-        pyout = self.metadata['pyout'] or {'data':{}}
-        text_out = pyout['data'].get('text/plain', '')
+        execute_result = self.metadata['execute_result'] or {'data':{}}
+        text_out = execute_result['data'].get('text/plain', '')
         if len(text_out) > 32:
             text_out = text_out[:29] + '...'
         
         return "<ExecuteReply[%i]: %s>" % (self.execution_count, text_out)
     
     def _repr_pretty_(self, p, cycle):
-        pyout = self.metadata['pyout'] or {'data':{}}
-        text_out = pyout['data'].get('text/plain', '')
+        execute_result = self.metadata['execute_result'] or {'data':{}}
+        text_out = execute_result['data'].get('text/plain', '')
         
         if not text_out:
             return
@@ -181,9 +168,9 @@ class Metadata(dict):
               'after' : None,
               'status' : None,
 
-              'pyin' : None,
-              'pyout' : None,
-              'pyerr' : None,
+              'execute_input' : None,
+              'execute_result' : None,
+              'error' : None,
               'stdout' : '',
               'stderr' : '',
               'outputs' : [],
@@ -455,6 +442,7 @@ class Client(HasTraits):
             # default to ssh via localhost
             sshserver = addr
         if self._ssh and password is None:
+            from zmq.ssh import tunnel
             if tunnel.try_passwordless_ssh(sshserver, sshkey, paramiko):
                 password=False
             else:
@@ -479,6 +467,7 @@ class Client(HasTraits):
         self._query_socket = self._context.socket(zmq.DEALER)
 
         if self._ssh:
+            from zmq.ssh import tunnel
             tunnel.tunnel_connection(self._query_socket, cfg['registration'], sshserver, **ssh_kwargs)
         else:
             self._query_socket.connect(cfg['registration'])
@@ -601,6 +590,7 @@ class Client(HasTraits):
 
         def connect_socket(s, url):
             if self._ssh:
+                from zmq.ssh import tunnel
                 return tunnel.tunnel_connection(s, url, sshserver, **ssh_kwargs)
             else:
                 return s.connect(url)
@@ -864,15 +854,19 @@ class Client(HasTraits):
             if self.debug:
                 pprint(msg)
             parent = msg['parent_header']
-            # ignore IOPub messages with no parent.
-            # Caused by print statements or warnings from before the first execution.
-            if not parent:
+            if not parent or parent['session'] != self.session.session:
+                # ignore IOPub messages not from here
                 idents,msg = self.session.recv(sock, mode=zmq.NOBLOCK)
                 continue
             msg_id = parent['msg_id']
             content = msg['content']
             header = msg['header']
             msg_type = msg['header']['msg_type']
+            
+            if msg_type == 'status' and msg_id not in self.metadata:
+                # ignore status messages if they aren't mine
+                idents,msg = self.session.recv(sock, mode=zmq.NOBLOCK)
+                continue
 
             # init metadata:
             md = self.metadata[msg_id]
@@ -881,14 +875,14 @@ class Client(HasTraits):
                 name = content['name']
                 s = md[name] or ''
                 md[name] = s + content['data']
-            elif msg_type == 'pyerr':
-                md.update({'pyerr' : self._unwrap_exception(content)})
-            elif msg_type == 'pyin':
-                md.update({'pyin' : content['code']})
+            elif msg_type == 'error':
+                md.update({'error' : self._unwrap_exception(content)})
+            elif msg_type == 'execute_input':
+                md.update({'execute_input' : content['code']})
             elif msg_type == 'display_data':
                 md['outputs'].append(content)
-            elif msg_type == 'pyout':
-                md['pyout'] = content
+            elif msg_type == 'execute_result':
+                md['execute_result'] = content
             elif msg_type == 'data_message':
                 data, remainder = serialize.unserialize_object(msg['buffers'])
                 md['data'].update(data)
@@ -921,7 +915,16 @@ class Client(HasTraits):
             raise TypeError("key by int/slice/iterable of ints only, not %s"%(type(key)))
         else:
             return self.direct_view(key)
-
+    
+    def __iter__(self):
+        """Since we define getitem, Client is iterable
+        
+        but unless we also define __iter__, it won't work correctly unless engine IDs
+        start at zero and are continuous.
+        """
+        for eid in self.ids:
+            yield self.direct_view(eid)
+    
     #--------------------------------------------------------------------------
     # Begin public methods
     #--------------------------------------------------------------------------
@@ -1288,7 +1291,7 @@ class Client(HasTraits):
         if not isinstance(metadata, dict):
             raise TypeError("metadata must be dict, not %s" % type(metadata))
         
-        content = dict(code=code, silent=bool(silent), user_variables=[], user_expressions={})
+        content = dict(code=code, silent=bool(silent), user_expressions={})
 
 
         msg = self.session.send(socket, "execute_request", content=content, ident=ident,
@@ -1361,7 +1364,7 @@ class Client(HasTraits):
     #--------------------------------------------------------------------------
 
     @spin_first
-    def get_result(self, indices_or_msg_ids=None, block=None):
+    def get_result(self, indices_or_msg_ids=None, block=None, owner=True):
         """Retrieve a result by msg_id or history index, wrapped in an AsyncResult object.
 
         If the client already has the results, no request to the Hub will be made.
@@ -1387,6 +1390,11 @@ class Client(HasTraits):
 
         block : bool
             Whether to wait for the result to be done
+        owner : bool [default: True]
+            Whether this AsyncResult should own the result.
+            If so, calling `ar.get()` will remove data from the
+            client's result and metadata cache.
+            There should only be one owner of any given msg_id.
 
         Returns
         -------
@@ -1424,9 +1432,9 @@ class Client(HasTraits):
             theids = theids[0]
 
         if remote_ids:
-            ar = AsyncHubResult(self, msg_ids=theids)
+            ar = AsyncHubResult(self, msg_ids=theids, owner=owner)
         else:
-            ar = AsyncResult(self, msg_ids=theids)
+            ar = AsyncResult(self, msg_ids=theids, owner=owner)
 
         if block:
             ar.wait()
@@ -1706,8 +1714,8 @@ class Client(HasTraits):
             if still_outstanding:
                 raise RuntimeError("Can't purge outstanding tasks: %s" % still_outstanding)
             for mid in msg_ids:
-                self.results.pop(mid)
-                self.metadata.pop(mid)
+                self.results.pop(mid, None)
+                self.metadata.pop(mid, None)
 
 
     @spin_first

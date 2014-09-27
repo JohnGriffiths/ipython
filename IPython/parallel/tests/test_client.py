@@ -1,20 +1,7 @@
-"""Tests for parallel client.py
+"""Tests for parallel client.py"""
 
-Authors:
-
-* Min RK
-"""
-
-#-------------------------------------------------------------------------------
-#  Copyright (C) 2011  The IPython Development Team
-#
-#  Distributed under the terms of the BSD License.  The full license is in
-#  the file COPYING, distributed as part of this software.
-#-------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------
-# Imports
-#-------------------------------------------------------------------------------
+# Copyright (c) IPython Development Team.
+# Distributed under the terms of the Modified BSD License.
 
 from __future__ import division
 
@@ -40,6 +27,11 @@ class TestClient(ClusterTestCase):
         n = len(self.client.ids)
         self.add_engines(2)
         self.assertEqual(len(self.client.ids), n+2)
+    
+    def test_iter(self):
+        self.minimum_engines(4)
+        engine_ids = [ view.targets for view in self.client ]
+        self.assertEqual(engine_ids, self.client.ids)
     
     def test_view_indexing(self):
         """test index access for views"""
@@ -151,11 +143,12 @@ class TestClient(ClusterTestCase):
         ar = c[t].apply_async(wait, 1)
         # give the monitor time to notice the message
         time.sleep(.25)
-        ahr = self.client.get_result(ar.msg_ids[0])
-        self.assertTrue(isinstance(ahr, AsyncHubResult))
+        ahr = self.client.get_result(ar.msg_ids[0], owner=False)
+        self.assertIsInstance(ahr, AsyncHubResult)
         self.assertEqual(ahr.get(), ar.get())
         ar2 = self.client.get_result(ar.msg_ids[0])
-        self.assertFalse(isinstance(ar2, AsyncHubResult))
+        self.assertNotIsInstance(ar2, AsyncHubResult)
+        self.assertEqual(ahr.get(), ar2.get())
         c.close()
     
     def test_get_execute_result(self):
@@ -170,11 +163,12 @@ class TestClient(ClusterTestCase):
         ar = c[t].execute("import time; time.sleep(1)", silent=False)
         # give the monitor time to notice the message
         time.sleep(.25)
-        ahr = self.client.get_result(ar.msg_ids[0])
-        self.assertTrue(isinstance(ahr, AsyncHubResult))
-        self.assertEqual(ahr.get().pyout, ar.get().pyout)
+        ahr = self.client.get_result(ar.msg_ids[0], owner=False)
+        self.assertIsInstance(ahr, AsyncHubResult)
+        self.assertEqual(ahr.get().execute_result, ar.get().execute_result)
         ar2 = self.client.get_result(ar.msg_ids[0])
-        self.assertFalse(isinstance(ar2, AsyncHubResult))
+        self.assertNotIsInstance(ar2, AsyncHubResult)
+        self.assertEqual(ahr.get(), ar2.get())
         c.close()
     
     def test_ids_list(self):
@@ -458,6 +452,7 @@ class TestClient(ClusterTestCase):
         v = self.client[-1]
         ar = v.apply_async(lambda : 1)
         msg_id = ar.msg_ids[0]
+        ar.owner = False
         ar.get()
         self._wait_for_idle()
         ar2 = v.apply_async(time.sleep, 1)
@@ -522,19 +517,23 @@ class TestClient(ClusterTestCase):
     def test_spin_thread(self):
         self.client.spin_thread(0.01)
         ar = self.client[-1].apply_async(lambda : 1)
-        time.sleep(0.1)
-        self.assertTrue(ar.wall_time < 0.1,
-            "spin should have kept wall_time < 0.1, but got %f" % ar.wall_time
-        )
+        md = self.client.metadata[ar.msg_ids[0]]
+        # 3s timeout, 100ms poll
+        for i in range(30):
+            time.sleep(0.1)
+            if md['received'] is not None:
+                break
+        self.assertIsInstance(md['received'], datetime)
     
     def test_stop_spin_thread(self):
         self.client.spin_thread(0.01)
         self.client.stop_spin_thread()
         ar = self.client[-1].apply_async(lambda : 1)
-        time.sleep(0.15)
-        self.assertTrue(ar.wall_time > 0.1,
-            "Shouldn't be spinning, but got wall_time=%f" % ar.wall_time
-        )
+        md = self.client.metadata[ar.msg_ids[0]]
+        # 500ms timeout, 100ms poll
+        for i in range(5):
+            time.sleep(0.1)
+            self.assertIsNone(md['received'], None)
     
     def test_activate(self):
         ip = get_ipython()

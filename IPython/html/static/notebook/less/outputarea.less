@@ -38,7 +38,7 @@ div.out_prompt_overlay:hover {
 }
 
 div.output_prompt {
-    color: darkred;
+    color: @output_prompt_color;
 }
 
 /* This class is the outer container of all output sections. */
@@ -72,17 +72,21 @@ div.output_area {
     .vbox();
 }
 
-div.output_area pre {   
-    font-family: @monoFontFamily;
+@media (max-width: 480px) {
+    // move prompts above output on small screens
+    div.output_area {
+        .vbox();
+    }
+}
+
+div.output_area pre {
     margin: 0;
     padding: 0;
     border: 0;
-    font-size: 100%;
     vertical-align: baseline;
-    color: black;
+    color: @output_pre_color;
     background-color: transparent;
     .border-radius(0);
-    line-height: inherit;
 }
 
 /* This class is for the output subarea inside the output_area and after
@@ -98,13 +102,12 @@ div.output_subarea {
 /* all text output has this class: */
 div.output_text {
     text-align: left;
-    color: @textColor;
-    font-family: @monoFontFamily;
+    color: @text-color;
     /* This has to match that of the the CodeMirror class line-height below */  
     line-height: @code_line_height;
 }
 
-/* stdout/stderr are 'text' as well as 'stream', but pyout/pyerr are *not* streams */
+/* stdout/stderr are 'text' as well as 'stream', but execute_result/error are *not* streams */
 div.output_stream {
 }
 
@@ -139,16 +142,15 @@ div.output_javascript:empty {
 
 /* raw_input styles */
 
-div.raw_input {
-    padding-top: 0px;
-    padding-bottom: 0px;
-    height: 1em;
-    line-height: 1em;
-    font-family: @monoFontFamily;
+div.raw_input_container {
+    font-family: @font-family-monospace;
+    // for some reason, em padding doesn't compute the same for raw_input
+    // that is not the first input, but px does
+    padding-top: 5px;
 }
 
-span.input_prompt {
-    font-family: inherit;
+span.raw_input_prompt {
+    /* nothing needed here */
 }
 
 input.raw_input {
@@ -156,10 +158,15 @@ input.raw_input {
     font-size: inherit;
     color: inherit;
     width: auto;
-    margin: -2px 0px 0px 1px;
-    padding-left: 1px;
-    padding-top: 2px;
-    height: 1em;
+    /* make sure input baseline aligns with prompt */
+    vertical-align: baseline;
+    /* padding + margin = 0.5em between prompt and cursor */
+    padding: 0em 0.25em;
+    margin: 0em 0.25em;
+}
+
+input.raw_input:focus {
+    box-shadow: none;
 }
 
 p.p-space {

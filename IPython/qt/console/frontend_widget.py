@@ -1,17 +1,19 @@
+"""Frontend widget for the Qt Console"""
+
+# Copyright (c) IPython Development Team.
+# Distributed under the terms of the Modified BSD License.
+
 from __future__ import print_function
 
-# Standard library imports
 from collections import namedtuple
 import sys
 import uuid
 
-# System library imports
 from IPython.external import qt
 from IPython.external.qt import QtCore, QtGui
 from IPython.utils import py3compat
 from IPython.utils.importstring import import_item
 
-# Local imports
 from IPython.core.inputsplitter import InputSplitter, IPythonInputSplitter
 from IPython.core.inputtransformer import classic_prompt
 from IPython.core.oinspect import call_tip
@@ -80,6 +82,7 @@ class FrontendWidget(HistoryConsoleWidget, BaseFrontendMixin):
 
     # The text to show when the kernel is (re)started.
     banner = Unicode(config=True)
+    kernel_banner = Unicode()
 
     # An option and corresponding signal for overriding the default kernel
     # interrupt behavior.
@@ -196,6 +199,9 @@ class FrontendWidget(HistoryConsoleWidget, BaseFrontendMixin):
         # Set flag for whether we are connected via localhost.
         self._local_kernel = kw.get('local_kernel',
                                     FrontendWidget._local_kernel)
+
+        # Whether or not a clear_output call is pending new output.
+        self._pending_clearoutput = False
 
     #---------------------------------------------------------------------------
     # 'ConsoleWidget' public interface
@@ -339,6 +345,14 @@ class FrontendWidget(HistoryConsoleWidget, BaseFrontendMixin):
     #---------------------------------------------------------------------------
     # 'BaseFrontendMixin' abstract interface
     #---------------------------------------------------------------------------
+    def _handle_clear_output(self, msg):
+        """Handle clear output messages."""
+        if not self._hidden and self._is_from_this_session(msg):
+            wait = msg['content'].get('wait', True)
+            if wait:
+                self._pending_clearoutput = True
+            else:
+                self.clear_output()
 
     def _handle_complete_reply(self, rep):
         """ Handle replies for tab completion.
@@ -491,35 +505,23 @@ class FrontendWidget(HistoryConsoleWidget, BaseFrontendMixin):
         self._kernel_restarted_message(died=died)
         self.reset()
 
-    def _handle_object_info_reply(self, rep):
-        """ Handle replies for call tips.
-        """
+    def _handle_inspect_reply(self, rep):
+        """Handle replies for call tips."""
         self.log.debug("oinfo: %s", rep.get('content', ''))
         cursor = self._get_cursor()
         info = self._request_info.get('call_tip')
         if info and info.id == rep['parent_header']['msg_id'] and \
                 info.pos == cursor.position():
-            # Get the information for a call tip.  For now we format the call
-            # line as string, later we can pass False to format_call and
-            # syntax-highlight it ourselves for nicer formatting in the
-            # calltip.
             content = rep['content']
-            # if this is from pykernel, 'docstring' will be the only key
-            if content.get('ismagic', False):
-                # Don't generate a call-tip for magics. Ideally, we should
-                # generate a tooltip, but not on ( like we do for actual
-                # callables.
-                call_info, doc = None, None
-            else:
-                call_info, doc = call_tip(content, format_call=True)
-            if call_info or doc:
-                self._call_tip_widget.show_call_info(call_info, doc)
+            if content.get('status') == 'ok':
+                self._call_tip_widget.show_inspect_data(content)
 
-    def _handle_pyout(self, msg):
+    def _handle_execute_result(self, msg):
         """ Handle display hook output.
         """
-        self.log.debug("pyout: %s", msg.get('content', ''))
+        self.log.debug("execute_result: %s", msg.get('content', ''))
         if not self._hidden and self._is_from_this_session(msg):
+            self.flush_clearoutput()
             text = msg['content']['data']
             self._append_plain_text(text + '\n', before_prompt=True)
 
@@ -528,18 +530,13 @@ class FrontendWidget(HistoryConsoleWidget, BaseFrontendMixin):
         """
         self.log.debug("stream: %s", msg.get('content', ''))
         if not self._hidden and self._is_from_this_session(msg):
-            # Most consoles treat tabs as being 8 space characters. Convert tabs
-            # to spaces so that output looks as expected regardless of this
-            # widget's tab width.
-            text = msg['content']['data'].expandtabs(8)
-
-            self._append_plain_text(text, before_prompt=True)
-            self._control.moveCursor(QtGui.QTextCursor.End)
+            self.flush_clearoutput()
+            self.append_stream(msg['content']['data'])
 
     def _handle_shutdown_reply(self, msg):
         """ Handle shutdown signal, only if from other console.
         """
-        self.log.warn("shutdown: %s", msg.get('content', ''))
+        self.log.info("shutdown: %s", msg.get('content', ''))
         restart = msg.get('content', {}).get('restart', False)
         if not self._hidden and not self._is_from_this_session(msg):
             # got shutdown reply, request came from session other than ours
@@ -630,6 +627,9 @@ class FrontendWidget(HistoryConsoleWidget, BaseFrontendMixin):
         if clear:
             self._control.clear()
             self._append_plain_text(self.banner)
+            if self.kernel_banner:
+                self._append_plain_text(self.kernel_banner)
+                
         # update output marker for stdout/stderr, so that startup
         # messages appear after banner:
         self._append_before_prompt_pos = self._get_cursor().position()
@@ -685,6 +685,29 @@ class FrontendWidget(HistoryConsoleWidget, BaseFrontendMixin):
                 before_prompt=True
             )
 
+    def append_stream(self, text):
+        """Appends text to the output stream."""
+        # Most consoles treat tabs as being 8 space characters. Convert tabs
+        # to spaces so that output looks as expected regardless of this
+        # widget's tab width.
+        text = text.expandtabs(8)
+        self._append_plain_text(text, before_prompt=True)
+        self._control.moveCursor(QtGui.QTextCursor.End)
+
+    def flush_clearoutput(self):
+        """If a clearoutput is pending, execute it."""
+        if self._pending_clearoutput:
+            self._pending_clearoutput = False
+            self.clear_output()
+
+    def clear_output(self):
+        """Clears the current line of output."""
+        cursor = self._control.textCursor()
+        cursor.beginEditBlock()
+        cursor.movePosition(cursor.StartOfLine, cursor.KeepAnchor)
+        cursor.insertText('')
+        cursor.endEditBlock()
+
     #---------------------------------------------------------------------------
     # 'FrontendWidget' protected interface
     #---------------------------------------------------------------------------
@@ -693,19 +716,12 @@ class FrontendWidget(HistoryConsoleWidget, BaseFrontendMixin):
         """ Shows a call tip, if appropriate, at the current cursor location.
         """
         # Decide if it makes sense to show a call tip
-        if not self.enable_calltips:
+        if not self.enable_calltips or not self.kernel_client.shell_channel.is_alive():
             return False
-        cursor = self._get_cursor()
-        cursor.movePosition(QtGui.QTextCursor.Left)
-        if cursor.document().characterAt(cursor.position()) != '(':
-            return False
-        context = self._get_context(cursor)
-        if not context:
-            return False
-
+        cursor_pos = self._get_input_buffer_cursor_pos()
+        code = self.input_buffer
         # Send the metadata request to the kernel
-        name = '.'.join(context)
-        msg_id = self.kernel_client.object_info(name)
+        msg_id = self.kernel_client.inspect(code, cursor_pos)
         pos = self._get_cursor().position()
         self._request_info['call_tip'] = self._CallTipRequest(msg_id, pos)
         return True
@@ -717,10 +733,9 @@ class FrontendWidget(HistoryConsoleWidget, BaseFrontendMixin):
         if context:
             # Send the completion request to the kernel
             msg_id = self.kernel_client.complete(
-                '.'.join(context),                       # text
-                self._get_input_buffer_cursor_line(),    # line
-                self._get_input_buffer_cursor_column(),  # cursor_pos
-                self.input_buffer)                       # block
+                code=self.input_buffer,
+                cursor_pos=self._get_input_buffer_cursor_pos(),
+            )
             pos = self._get_cursor().position()
             info = self._CompletionRequest(msg_id, pos)
             self._request_info['complete'] = info

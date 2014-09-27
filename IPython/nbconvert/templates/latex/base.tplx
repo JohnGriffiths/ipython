@@ -30,6 +30,7 @@ This template does not define a docclass, the inheriting class must define this.
     % internal cross-reference links, web links for URLs, etc.)
     \usepackage{hyperref}
     \usepackage{longtable} % longtable support required by pandoc >1.10
+    \usepackage{booktabs}  % table support for pandoc > 1.12.2
     ((* endblock packages *))
 
     ((* block definitions *))
@@ -62,8 +63,6 @@ This template does not define a docclass, the inheriting class must define this.
     
     % commands and environments needed by pandoc snippets
     % extracted from the output of `pandoc -s`
-    
-    \DefineShortVerb[commandchars=\\\{\}]{\|}
     \DefineVerbatimEnvironment{Highlighting}{Verbatim}{commandchars=\\\{\}}
     % Add ',fontsize=\small' for more characters per line
     \newenvironment{Shaded}{}{}
@@ -159,11 +158,11 @@ This template does not define a docclass, the inheriting class must define this.
 
 % Display latex
 ((* block data_latex -*))
-    ((*- if output.latex.startswith('$'): -*)) 
+    ((*- if output.latex.startswith('$'): -*))
         ((= Replace $ symbols with more explicit, equation block. =))
-        \begin{equation*}
+        \begin{equation*}\adjustbox{max width=\hsize}{$
         ((( output.latex | strip_dollars )))
-        \end{equation*}
+        $}\end{equation*}
     ((*- else -*))
         ((( output.latex )))
     ((*- endif *))

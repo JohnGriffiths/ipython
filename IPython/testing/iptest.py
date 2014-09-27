@@ -140,15 +140,18 @@ have['pexpect'] = test_for('IPython.external.pexpect')
 have['pymongo'] = test_for('pymongo')
 have['pygments'] = test_for('pygments')
 have['qt'] = test_for('IPython.external.qt')
-have['rpy2'] = test_for('rpy2')
 have['sqlite3'] = test_for('sqlite3')
 have['cython'] = test_for('Cython')
-have['oct2py'] = test_for('oct2py')
 have['tornado'] = test_for('tornado.version_info', (3,1,0), callback=None)
 have['jinja2'] = test_for('jinja2')
+have['mistune'] = test_for('mistune')
 have['requests'] = test_for('requests')
 have['sphinx'] = test_for('sphinx')
+have['jsonschema'] = test_for('jsonschema')
+have['jsonpointer'] = test_for('jsonpointer')
 have['casperjs'] = is_cmd_found('casperjs')
+have['phantomjs'] = is_cmd_found('phantomjs')
+have['slimerjs'] = is_cmd_found('slimerjs')
 
 min_zmq = (2,1,11)
 
@@ -239,6 +242,7 @@ sec.requires('zmq')
 sec.exclude('inprocess')
 # importing gtk sets the default encoding, which we want to avoid
 sec.exclude('zmq.gui.gtkembed')
+sec.exclude('zmq.gui.gtk3embed')
 if not have['matplotlib']:
     sec.exclude('zmq.pylab')
 
@@ -250,12 +254,8 @@ sec = test_sections['extensions']
 if not have['cython']:
     sec.exclude('cythonmagic')
     sec.exclude('tests.test_cythonmagic')
-if not have['oct2py']:
-    sec.exclude('octavemagic')
-    sec.exclude('tests.test_octavemagic')
-if not have['rpy2'] or not have['numpy']:
-    sec.exclude('rmagic')
-    sec.exclude('tests.test_rmagic')
+# This is deprecated in favour of rpy2
+sec.exclude('rmagic')
 # autoreload does some strange stuff, so move it to its own test section
 sec.exclude('autoreload')
 sec.exclude('tests.test_autoreload')
@@ -268,7 +268,7 @@ test_sections['qt'].requires('zmq', 'qt', 'pygments')
 
 # html:
 sec = test_sections['html']
-sec.requires('zmq', 'tornado', 'requests')
+sec.requires('zmq', 'tornado', 'requests', 'sqlite3', 'jsonschema', 'jsonpointer')
 # The notebook 'static' directory contains JS, css and other
 # files for web serving.  Occasionally projects may put a .py
 # file in there (MathJax ships a conf.py), so we might as
@@ -286,7 +286,7 @@ test_sections['config'].exclude('profile')
 
 # nbconvert:
 sec = test_sections['nbconvert']
-sec.requires('pygments', 'jinja2')
+sec.requires('pygments', 'jinja2', 'jsonschema', 'jsonpointer', 'mistune')
 # Exclude nbconvert directories containing config files used to test.
 # Executing the config files with iptest would cause an exception.
 sec.exclude('tests.files')
@@ -294,6 +294,9 @@ sec.exclude('exporters.tests.files')
 if not have['tornado']:
     sec.exclude('nbconvert.post_processors.serve')
     sec.exclude('nbconvert.post_processors.tests.test_serve')
+
+# nbformat:
+test_sections['nbformat'].requires('jsonschema', 'jsonpointer')
 
 #-----------------------------------------------------------------------------
 # Functions and classes

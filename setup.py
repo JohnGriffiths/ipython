@@ -14,7 +14,7 @@ requires utilities which are not available under Windows."""
 #
 #  Distributed under the terms of the Modified BSD License.
 #
-#  The full license is in the file COPYING.txt, distributed with this software.
+#  The full license is in the file COPYING.rst, distributed with this software.
 #-----------------------------------------------------------------------------
 
 #-----------------------------------------------------------------------------
@@ -26,8 +26,9 @@ import sys
 
 # This check is also made in IPython/__init__, don't forget to update both when
 # changing Python version requirements.
-if sys.version_info[:2] < (2,7):
-    error = "ERROR: IPython requires Python Version 2.7 or above."
+v = sys.version_info
+if v[:2] < (2,7) or (v[0] >= 3 and v[:2] < (3,3)):
+    error = "ERROR: IPython requires Python version 2.7 or 3.3 or above."
     print(error, file=sys.stderr)
     sys.exit(1)
 
@@ -71,6 +72,7 @@ from setupbase import (
     get_bdist_wheel,
     CompileCSS,
     JavascriptVersion,
+    css_js_prerelease,
     install_symlinked,
     install_lib_symlink,
     install_scripts_for_symlink,
@@ -226,8 +228,10 @@ class UploadWindowsInstallers(upload):
             self.upload_file('bdist_wininst', 'any', dist_file)
 
 setup_args['cmdclass'] = {
-    'build_py': check_package_data_first(git_prebuild('IPython')),
-    'sdist' : git_prebuild('IPython', sdist),
+    'build_py': css_js_prerelease(
+            check_package_data_first(git_prebuild('IPython')),
+        strict=False),
+    'sdist' : css_js_prerelease(git_prebuild('IPython', sdist)),
     'upload_wininst' : UploadWindowsInstallers,
     'submodule' : UpdateSubmodules,
     'css' : CompileCSS,
@@ -270,11 +274,17 @@ extras_require = dict(
     zmq = ['pyzmq>=2.1.11'],
     doc = ['Sphinx>=1.1', 'numpydoc'],
     test = ['nose>=0.10.1'],
-    notebook = ['tornado>=3.1', 'pyzmq>=2.1.11', 'jinja2'],
-    nbconvert = ['pygments', 'jinja2', 'Sphinx>=0.3']
+    terminal = [],
+    nbformat = ['jsonschema>=2.0', 'jsonpointer>=1.3'],
+    notebook = ['tornado>=3.1', 'pyzmq>=2.1.11', 'jinja2', 'pygments', 'mistune>=0.3.1'],
+    nbconvert = ['pygments', 'jinja2', 'mistune>=0.3.1']
 )
+
 if sys.version_info < (3, 3):
     extras_require['test'].append('mock')
+
+extras_require['notebook'].extend(extras_require['nbformat'])
+extras_require['nbconvert'].extend(extras_require['nbformat'])
 
 everything = set()
 for deps in extras_require.values():
@@ -282,18 +292,20 @@ for deps in extras_require.values():
 extras_require['all'] = everything
 
 install_requires = []
+
+# add readline
 if sys.platform == 'darwin':
     if any(arg.startswith('bdist') for arg in sys.argv) or not setupext.check_for_readline():
         install_requires.append('gnureadline')
 elif sys.platform.startswith('win'):
-    # Pyreadline has unicode and Python 3 fixes in 2.0
-    install_requires.append('pyreadline>=2.0')
+    extras_require['terminal'].append('pyreadline>=2.0')
+
 
 if 'setuptools' in sys.modules:
     # setup.py develop should check for submodules
     from setuptools.command.develop import develop
     setup_args['cmdclass']['develop'] = require_submodules(develop)
-    setup_args['cmdclass']['bdist_wheel'] = get_bdist_wheel()
+    setup_args['cmdclass']['bdist_wheel'] = css_js_prerelease(get_bdist_wheel())
     
     setuptools_extra_args['zip_safe'] = False
     setuptools_extra_args['entry_points'] = {'console_scripts':find_entry_points()}

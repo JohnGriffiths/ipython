@@ -1,26 +1,22 @@
-//----------------------------------------------------------------------------
-//  Copyright (C) 2013 The IPython Development Team
-//
-//  Distributed under the terms of the BSD License.  The full license is in
-//  the file COPYING, distributed as part of this software.
-//----------------------------------------------------------------------------
+// Copyright (c) IPython Development Team.
+// Distributed under the terms of the Modified BSD License.
 
-//============================================================================
-// ButtonWidget
-//============================================================================
+define([
+    "widgets/js/widget",
+    "jquery",
+    "bootstrap",
+], function(widget, $){
 
-/**
- * @module IPython
- * @namespace IPython
- **/
-
-define(["widgets/js/widget"], function(WidgetManager){
-
-    var ButtonView = IPython.DOMWidgetView.extend({
+    var ButtonView = widget.DOMWidgetView.extend({
         render : function(){
             // Called when view is rendered.
             this.setElement($("<button />")
-                .addClass('btn'));
+                .addClass('btn btn-default'));
+
+            this.model.on('change:button_style', function(model, value) {
+                this.update_button_style();
+            }, this);
+            this.update_button_style('');
 
             this.update(); // Set defaults.
         },
@@ -46,6 +42,17 @@ define(["widgets/js/widget"], function(WidgetManager){
             return ButtonView.__super__.update.apply(this);
         },
 
+        update_button_style: function(previous_trait_value) {
+            var class_map = {
+                primary: ['btn-primary'],
+                success: ['btn-success'],
+                info: ['btn-info'],
+                warning: ['btn-warning'],
+                danger: ['btn-danger']
+            };
+            this.update_mapped_classes(class_map, 'button_style', previous_trait_value);
+        },
+
         events: {
             // Dictionary of events and their handlers.
             'click': '_handle_click',
@@ -56,5 +63,8 @@ define(["widgets/js/widget"], function(WidgetManager){
             this.send({event: 'click'});
         },
     });
-    WidgetManager.register_widget_view('ButtonView', ButtonView);
+
+    return {
+        'ButtonView': ButtonView,
+    };
 });

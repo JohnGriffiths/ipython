@@ -1,12 +1,7 @@
-"""wrappers for stdout/stderr forwarding over zmq
-"""
+"""Wrappers for forwarding stdout/stderr over zmq"""
 
-#-----------------------------------------------------------------------------
-#  Copyright (C) 2013  The IPython Development Team
-#
-#  Distributed under the terms of the BSD License.  The full license is in
-#  the file COPYING, distributed as part of this software.
-#-----------------------------------------------------------------------------
+# Copyright (c) IPython Development Team.
+# Distributed under the terms of the Modified BSD License.
 
 import os
 import threading
@@ -15,6 +10,7 @@ import uuid
 from io import StringIO, UnsupportedOperation
 
 import zmq
+from zmq.eventloop.ioloop import IOLoop
 
 from .session import extract_header
 
@@ -78,6 +74,13 @@ class OutStream(object):
             return
         self._pipe_poller = zmq.Poller()
         self._pipe_poller.register(self._pipe_in, zmq.POLLIN)
+        if IOLoop.initialized():
+            # subprocess flush should trigger flush
+            # if kernel is idle
+            IOLoop.instance().add_handler(self._pipe_in,
+                lambda s, event: self.flush(),
+                IOLoop.READ,
+            )
     
     def _setup_pipe_out(self):
         # must be new context after fork
@@ -130,6 +133,17 @@ class OutStream(object):
             else:
                 break
     
+    def _schedule_flush(self):
+        """schedule a flush in the main thread
+        
+        only works with a tornado/pyzmq eventloop running
+        """
+        if IOLoop.initialized():
+            IOLoop.instance().add_callback(self.flush)
+        else:
+            # no async loop, at least force the timer
+            self._start = 0
+    
     def flush(self):
         """trigger actual zmq send"""
         if self.pub_socket is None:
@@ -140,9 +154,9 @@ class OutStream(object):
         if mp_mode != CHILD:
             # we are master
             if not self._is_master_thread():
-                # sub-threads must not trigger flush,
-                # but at least they can force the timer.
-                self._start = 0
+                # sub-threads must not trigger flush directly,
+                # but at least they can schedule an async flush, or force the timer.
+                self._schedule_flush()
                 return
             
             self._flush_from_subprocesses()

@@ -1,20 +1,9 @@
-"""Tornado handlers for WebSocket <-> ZMQ sockets.
+"""Tornado handlers for WebSocket <-> ZMQ sockets."""
 
-Authors:
+# Copyright (c) IPython Development Team.
+# Distributed under the terms of the Modified BSD License.
 
-* Brian Granger
-"""
-
-#-----------------------------------------------------------------------------
-#  Copyright (C) 2008-2011  The IPython Development Team
-#
-#  Distributed under the terms of the BSD License.  The full license is in
-#  the file COPYING, distributed as part of this software.
-#-----------------------------------------------------------------------------
-
-#-----------------------------------------------------------------------------
-# Imports
-#-----------------------------------------------------------------------------
+import json
 
 try:
     from urllib.parse import urlparse # Py 3
@@ -26,10 +15,11 @@ try:
 except ImportError:
     from Cookie import SimpleCookie  # Py 2
 import logging
+
+import tornado
+from tornado import ioloop
 from tornado import web
 from tornado import websocket
-
-from zmq.utils import jsonapi
 
 from IPython.kernel.zmq.session import Session
 from IPython.utils.jsonutil import date_default
@@ -37,34 +27,48 @@ from IPython.utils.py3compat import PY3, cast_unicode
 
 from .handlers import IPythonHandler
 
-#-----------------------------------------------------------------------------
-# ZMQ handlers
-#-----------------------------------------------------------------------------
 
 class ZMQStreamHandler(websocket.WebSocketHandler):
-
-    def same_origin(self):
-        """Check to see that origin and host match in the headers."""
-
-        # The difference between version 8 and 13 is that in 8 the
-        # client sends a "Sec-Websocket-Origin" header and in 13 it's
-        # simply "Origin".
-        if self.request.headers.get("Sec-WebSocket-Version") in ("7", "8"):
-            origin_header = self.request.headers.get("Sec-Websocket-Origin")
-        else:
-            origin_header = self.request.headers.get("Origin")
+    
+    def check_origin(self, origin):
+        """Check Origin == Host or Access-Control-Allow-Origin.
+        
+        Tornado >= 4 calls this method automatically, raising 403 if it returns False.
+        We call it explicitly in `open` on Tornado < 4.
+        """
+        if self.allow_origin == '*':
+            return True
 
         host = self.request.headers.get("Host")
 
         # If no header is provided, assume we can't verify origin
-        if(origin_header is None or host is None):
+        if origin is None:
+            self.log.warn("Missing Origin header, rejecting WebSocket connection.")
             return False
-
-        parsed_origin = urlparse(origin_header)
-        origin = parsed_origin.netloc
-
-        # Check to see that origin matches host directly, including ports
-        return origin == host
+        if host is None:
+            self.log.warn("Missing Host header, rejecting WebSocket connection.")
+            return False
+        
+        origin = origin.lower()
+        origin_host = urlparse(origin).netloc
+        
+        # OK if origin matches host
+        if origin_host == host:
+            return True
+        
+        # Check CORS headers
+        if self.allow_origin:
+            allow = self.allow_origin == origin
+        elif self.allow_origin_pat:
+            allow = bool(self.allow_origin_pat.match(origin))
+        else:
+            # No CORS headers deny the request
+            allow = False
+        if not allow:
+            self.log.warn("Blocking Cross Origin WebSocket Attempt.  Origin: %s, Host: %s",
+                origin, host,
+            )
+        return allow
 
     def clear_cookie(self, *args, **kwargs):
         """meaningless for websockets"""
@@ -89,7 +93,7 @@ class ZMQStreamHandler(websocket.WebSocketHandler):
         except KeyError:
             pass
         msg.pop('buffers')
-        return jsonapi.dumps(msg, default=date_default)
+        return json.dumps(msg, default=date_default)
 
     def _on_zmq_reply(self, msg_list):
         # Sometimes this gets triggered when the on_close method is scheduled in the
@@ -110,19 +114,79 @@ class ZMQStreamHandler(websocket.WebSocketHandler):
         """
         return True
 
+# ping interval for keeping websockets alive (30 seconds)
+WS_PING_INTERVAL = 30000
 
 class AuthenticatedZMQStreamHandler(ZMQStreamHandler, IPythonHandler):
+    ping_callback = None
+    last_ping = 0
+    last_pong = 0
+    
+    @property
+    def ping_interval(self):
+        """The interval for websocket keep-alive pings.
+        
+        Set ws_ping_interval = 0 to disable pings.
+        """
+        return self.settings.get('ws_ping_interval', WS_PING_INTERVAL)
+    
+    @property
+    def ping_timeout(self):
+        """If no ping is received in this many milliseconds,
+        close the websocket connection (VPNs, etc. can fail to cleanly close ws connections).
+        Default is max of 3 pings or 30 seconds.
+        """
+        return self.settings.get('ws_ping_timeout',
+            max(3 * self.ping_interval, WS_PING_INTERVAL)
+        )
+
+    def set_default_headers(self):
+        """Undo the set_default_headers in IPythonHandler
+        
+        which doesn't make sense for websockets
+        """
+        pass
 
     def open(self, kernel_id):
-        # Check to see that origin matches host directly, including ports
-        if not self.same_origin():
-            self.log.warn("Cross Origin WebSocket Attempt.")
-            raise web.HTTPError(404)
-
         self.kernel_id = cast_unicode(kernel_id, 'ascii')
+        # Check to see that origin matches host directly, including ports
+        # Tornado 4 already does CORS checking
+        if tornado.version_info[0] < 4:
+            if not self.check_origin(self.get_origin()):
+                raise web.HTTPError(403)
+
         self.session = Session(config=self.config)
         self.save_on_message = self.on_message
         self.on_message = self.on_first_message
+        
+        # start the pinging
+        if self.ping_interval > 0:
+            self.last_ping = ioloop.IOLoop.instance().time()  # Remember time of last ping
+            self.last_pong = self.last_ping
+            self.ping_callback = ioloop.PeriodicCallback(self.send_ping, self.ping_interval)
+            self.ping_callback.start()
+
+    def send_ping(self):
+        """send a ping to keep the websocket alive"""
+        if self.stream.closed() and self.ping_callback is not None:
+            self.ping_callback.stop()
+            return
+        
+        # check for timeout on pong.  Make sure that we really have sent a recent ping in
+        # case the machine with both server and client has been suspended since the last ping.
+        now = ioloop.IOLoop.instance().time()
+        since_last_pong = 1e3 * (now - self.last_pong)
+        since_last_ping = 1e3 * (now - self.last_ping)
+        if since_last_ping < 2*self.ping_interval and since_last_pong > self.ping_timeout:
+            self.log.warn("WebSocket ping timeout after %i ms.", since_last_pong)
+            self.close()
+            return
+
+        self.ping(b'')
+        self.last_ping = now
+
+    def on_pong(self, data):
+        self.last_pong = ioloop.IOLoop.instance().time()
 
     def _inject_cookie_message(self, msg):
         """Inject the first message, which is the document cookie,

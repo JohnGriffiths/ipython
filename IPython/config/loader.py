@@ -1,30 +1,12 @@
-"""A simple configuration system.
+# encoding: utf-8
+"""A simple configuration system."""
 
-Inheritance diagram:
-
-.. inheritance-diagram:: IPython.config.loader
-   :parts: 3
-
-Authors
--------
-* Brian Granger
-* Fernando Perez
-* Min RK
-"""
-
-#-----------------------------------------------------------------------------
-#  Copyright (C) 2008-2011  The IPython Development Team
-#
-#  Distributed under the terms of the BSD License.  The full license is in
-#  the file COPYING, distributed as part of this software.
-#-----------------------------------------------------------------------------
-
-#-----------------------------------------------------------------------------
-# Imports
-#-----------------------------------------------------------------------------
+# Copyright (c) IPython Development Team.
+# Distributed under the terms of the Modified BSD License.
 
 import argparse
 import copy
+import logging
 import os
 import re
 import sys
@@ -34,7 +16,7 @@ from IPython.utils.path import filefind, get_ipython_dir
 from IPython.utils import py3compat
 from IPython.utils.encoding import DEFAULT_ENCODING
 from IPython.utils.py3compat import unicode_type, iteritems
-from IPython.utils.traitlets import HasTraits, List, Any, TraitError
+from IPython.utils.traitlets import HasTraits, List, Any
 
 #-----------------------------------------------------------------------------
 # Exceptions
@@ -307,8 +289,8 @@ class ConfigLoader(object):
     """
 
     def _log_default(self):
-        from IPython.config.application import Application
-        return Application.instance().log
+        from IPython.utils.log import get_logger
+        return get_logger()
 
     def __init__(self, log=None):
         """A base class for config loaders.

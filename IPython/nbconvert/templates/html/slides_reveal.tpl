@@ -10,7 +10,13 @@
     <section>
     {{ super() }}
 {%- elif cell.metadata.slide_type in ['-'] -%}
-    {{ super() }}
+    {%- if cell.metadata.frag_helper in ['fragment_end'] -%}
+        <div class="fragment" data-fragment-index="{{ cell.metadata.frag_number }}">
+        {{ super() }}
+        </div>
+    {%- else -%}
+        {{ super() }}
+    {%- endif -%}
 {%- elif cell.metadata.slide_type in ['skip'] -%}
     <div style=display:none>
     {{ super() }}
@@ -20,7 +26,7 @@
     {{ super() }}
     </aside>
 {%- elif cell.metadata.slide_type in ['fragment'] -%}
-    <div class="fragment">
+    <div class="fragment" data-fragment-index="{{ cell.metadata.frag_number }}">
     {{ super() }}
     </div>
 {%- endif -%}
@@ -45,6 +51,9 @@
 
 <title>{{resources['metadata']['name']}} slides</title>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.1.10/require.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/2.0.3/jquery.min.js"></script>
+
 <!-- General and theme style sheets -->
 <link rel="stylesheet" href="{{resources.reveal.url_prefix}}/css/reveal.css">
 <link rel="stylesheet" href="{{resources.reveal.url_prefix}}/css/theme/simple.css" id="theme">
@@ -52,9 +61,16 @@
 <!-- For syntax highlighting -->
 <link rel="stylesheet" href="{{resources.reveal.url_prefix}}/lib/css/zenburn.css">
 
-<!-- If the query includes 'print-pdf', use the PDF print sheet -->
+<!-- If the query includes 'print-pdf', include the PDF print sheet -->
 <script>
-document.write( '<link rel="stylesheet" href="{{resources.reveal.url_prefix}}/css/print/' + ( window.location.search.match( /print-pdf/gi ) ? 'pdf' : 'paper' ) + '.css" type="text/css" media="print">' );
+if( window.location.search.match( /print-pdf/gi ) ) {
+        var link = document.createElement( 'link' );
+        link.rel = 'stylesheet';
+        link.type = 'text/css';
+        link.href = '{{resources.reveal.url_prefix}}/css/print/pdf.css';
+        document.getElementsByTagName( 'head' )[0].appendChild( link );
+}
+
 </script>
 
 <!--[if lt IE 9]>
@@ -62,7 +78,7 @@ document.write( '<link rel="stylesheet" href="{{resources.reveal.url_prefix}}/cs
 <![endif]-->
 
 <!-- Get Font-awesome from cdn -->
-<link rel="stylesheet" href="//netdna.bootstrapcdn.com/font-awesome/3.2.1/css/font-awesome.css">
+<link rel="stylesheet" href="//netdna.bootstrapcdn.com/font-awesome/4.1.0/css/font-awesome.css">
 
 {% for css in resources.inlining.css -%}
     <style type="text/css">
@@ -164,7 +180,6 @@ transition: Reveal.getQueryHash().transition || 'linear', // default/cube/page/c
 // Optional libraries used to extend on reveal.js
 dependencies: [
 { src: "{{resources.reveal.url_prefix}}/lib/js/classList.js", condition: function() { return !document.body.classList; } },
-{ src: "{{resources.reveal.url_prefix}}/plugin/highlight/highlight.js", async: true, callback: function() { hljs.initHighlightingOnLoad(); } },
 { src: "{{resources.reveal.url_prefix}}/plugin/notes/notes.js", async: true, condition: function() { return !!document.body.classList; } }
 ]
 });

@@ -1,52 +1,61 @@
-//----------------------------------------------------------------------------
-//  Copyright (C) 2008-2011  The IPython Development Team
-//
-//  Distributed under the terms of the BSD License.  The full license is in
-//  the file COPYING, distributed as part of this software.
-//----------------------------------------------------------------------------
+// Copyright (c) IPython Development Team.
+// Distributed under the terms of the Modified BSD License.
 
-//============================================================================
-// Cell
-//============================================================================
-/**
- * An extendable module that provide base functionnality to create cell for notebook.
- * @module IPython
- * @namespace IPython
- * @submodule Cell
- */
-
-var IPython = (function (IPython) {
+define([
+    'base/js/namespace',
+    'jquery',
+    'base/js/utils',
+], function(IPython, $, utils) {
+    // TODO: remove IPython dependency here 
     "use strict";
 
-    var utils = IPython.utils;
+    // monkey patch CM to be able to syntax highlight cell magics
+    // bug reported upstream,
+    // see https://github.com/codemirror/CodeMirror/issues/670
+    if(CodeMirror.getMode(1,'text/plain').indent === undefined ){
+        CodeMirror.modes.null = function() {
+            return {token: function(stream) {stream.skipToEnd();},indent : function(){return 0;}};
+        };
+    }
 
-    /**
-     * The Base `Cell` class from which to inherit
-     * @class Cell
-     **/
+    CodeMirror.patchedGetMode = function(config, mode){
+            var cmmode = CodeMirror.getMode(config, mode);
+            if(cmmode.indent === null) {
+                console.log('patch mode "' , mode, '" on the fly');
+                cmmode.indent = function(){return 0;};
+            }
+            return cmmode;
+        };
+    // end monkey patching CodeMirror
 
-    /*
-     * @constructor
-     *
-     * @param {object|undefined} [options]
-     *     @param [options.cm_config] {object} config to pass to CodeMirror, will extend default parameters
-     */
     var Cell = function (options) {
-
-        options = this.mergeopt(Cell, options);
+        // Constructor
+        //
+        // The Base `Cell` class from which to inherit.
+        //
+        // Parameters:
+        //  options: dictionary
+        //      Dictionary of keyword arguments.
+        //          events: $(Events) instance 
+        //          config: dictionary
+        //          keyboard_manager: KeyboardManager instance 
+        options = options || {};
+        this.keyboard_manager = options.keyboard_manager;
+        this.events = options.events;
+        var config = utils.mergeopt(Cell, options.config);
         // superclass default overwrite our default
         
-        this.placeholder = options.placeholder || '';
-        this.read_only = options.cm_config.readOnly;
+        this.placeholder = config.placeholder || '';
+        this.read_only = config.cm_config.readOnly;
         this.selected = false;
         this.rendered = false;
         this.mode = 'command';
         this.metadata = {};
         // load this from metadata later ?
         this.user_highlight = 'auto';
-        this.cm_config = options.cm_config;
+        this.cm_config = config.cm_config;
         this.cell_id = utils.uuid();
-        this._options = options;
+        this._options = config;
 
         // For JS VM engines optimization, attributes should be all set (even
         // to null) in the constructor, and if possible, if different subclass
@@ -69,22 +78,21 @@ var IPython = (function (IPython) {
         cm_config : {
             indentUnit : 4,
             readOnly: false,
-            theme: "default"
+            theme: "default",
+            extraKeys: {
+                "Cmd-Right":"goLineRight",
+                "End":"goLineRight",
+                "Cmd-Left":"goLineLeft"
+            }
         }
     };
     
     // FIXME: Workaround CM Bug #332 (Safari segfault on drag)
     // by disabling drag/drop altogether on Safari
-    // https://github.com/marijnh/CodeMirror/issues/332    
+    // https://github.com/codemirror/CodeMirror/issues/332    
     if (utils.browser[0] == "Safari") {
         Cell.options_default.cm_config.dragDrop = false;
     }
-
-    Cell.prototype.mergeopt = function(_class, options, overwrite){
-        options = options || {};
-        overwrite = overwrite || {};
-        return $.extend(true, {}, _class.options_default, options, overwrite);
-    };
 
     /**
      * Empty. Subclasses must implement create_element.
@@ -126,33 +134,53 @@ var IPython = (function (IPython) {
         // We trigger events so that Cell doesn't have to depend on Notebook.
         that.element.click(function (event) {
             if (!that.selected) {
-                $([IPython.events]).trigger('select.Cell', {'cell':that});
+                that.events.trigger('select.Cell', {'cell':that});
             }
         });
         that.element.focusin(function (event) {
             if (!that.selected) {
-                $([IPython.events]).trigger('select.Cell', {'cell':that});
+                that.events.trigger('select.Cell', {'cell':that});
             }
         });
         if (this.code_mirror) {
             this.code_mirror.on("change", function(cm, change) {
-                $([IPython.events]).trigger("set_dirty.Notebook", {value: true});
+                that.events.trigger("set_dirty.Notebook", {value: true});
             });
         }
         if (this.code_mirror) {
             this.code_mirror.on('focus', function(cm, change) {
-                $([IPython.events]).trigger('edit_mode.Cell', {cell: that});
+                that.events.trigger('edit_mode.Cell', {cell: that});
             });
         }
         if (this.code_mirror) {
             this.code_mirror.on('blur', function(cm, change) {
-                // Check if this unfocus event is legit.
-                if (!that.should_cancel_blur()) {
-                    $([IPython.events]).trigger('command_mode.Cell', {cell: that});
-                }
+                that.events.trigger('command_mode.Cell', {cell: that});
             });
         }
     };
+    
+    /**
+     * This method gets called in CodeMirror's onKeyDown/onKeyPress
+     * handlers and is used to provide custom key handling.
+     *
+     * To have custom handling, subclasses should override this method, but still call it
+     * in order to process the Edit mode keyboard shortcuts.
+     *
+     * @method handle_codemirror_keyevent
+     * @param {CodeMirror} editor - The codemirror instance bound to the cell
+     * @param {event} event - key press event which either should or should not be handled by CodeMirror
+     * @return {Boolean} `true` if CodeMirror should ignore the event, `false` Otherwise
+     */
+    Cell.prototype.handle_codemirror_keyevent = function (editor, event) {
+        var shortcuts = this.keyboard_manager.edit_shortcuts;
+
+        // if this is an edit_shortcuts shortcut, the global keyboard/shortcut
+        // manager will handle it
+        if (shortcuts.handles(event)) { return true; }
+        
+        return false;
+    };
+
 
     /**
      * Triger typsetting of math by mathjax on current cell element
@@ -230,6 +258,52 @@ var IPython = (function (IPython) {
     };
 
     /**
+     * Delegates keyboard shortcut handling to either IPython keyboard
+     * manager when in command mode, or CodeMirror when in edit mode
+     *
+     * @method handle_keyevent
+     * @param {CodeMirror} editor - The codemirror instance bound to the cell
+     * @param {event} - key event to be handled
+     * @return {Boolean} `true` if CodeMirror should ignore the event, `false` Otherwise
+     */
+    Cell.prototype.handle_keyevent = function (editor, event) {
+
+        // console.log('CM', this.mode, event.which, event.type)
+
+        if (this.mode === 'command') {
+            return true;
+        } else if (this.mode === 'edit') {
+            return this.handle_codemirror_keyevent(editor, event);
+        }
+    };
+
+    /**
+     * @method at_top
+     * @return {Boolean}
+     */
+    Cell.prototype.at_top = function () {
+        var cm = this.code_mirror;
+        var cursor = cm.getCursor();
+        if (cursor.line === 0 && cursor.ch === 0) {
+            return true;
+        }
+        return false;
+    };
+
+    /**
+     * @method at_bottom
+     * @return {Boolean}
+     * */
+    Cell.prototype.at_bottom = function () {
+        var cm = this.code_mirror;
+        var cursor = cm.getCursor();
+        if (cursor.line === (cm.lineCount()-1) && cursor.ch === cm.getLine(cursor.line).length) {
+            return true;
+        }
+        return false;
+    };
+
+    /**
      * enter the command mode for the cell
      * @method command_mode
      * @return is the action being taken
@@ -260,18 +334,7 @@ var IPython = (function (IPython) {
             return false;
         }
     };
-
-    /**
-     * Determine whether or not the unfocus event should be aknowledged.
-     *
-     * @method should_cancel_blur
-     *
-     * @return results {bool} Whether or not to ignore the cell's blur event.
-     **/
-    Cell.prototype.should_cancel_blur = function () {
-        return false;
-    };
-
+    
     /**
      * Focus the cell in the DOM sense
      * @method focus_cell
@@ -487,9 +550,8 @@ var IPython = (function (IPython) {
         this.code_mirror.setOption('mode', default_mode);
     };
 
+    // Backwards compatibility.
     IPython.Cell = Cell;
 
-    return IPython;
-
-}(IPython));
-
+    return {'Cell': Cell};
+});

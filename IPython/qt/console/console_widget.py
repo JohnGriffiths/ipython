@@ -919,7 +919,7 @@ class ConsoleWidget(MetaQObjectHasTraits('NewBase', (LoggingConfigurable, QtGui.
 
         # Adjust the prompt position if we have inserted before it. This is safe
         # because buffer truncation is disabled when not executing.
-        if before_prompt and not self._executing:
+        if before_prompt and (self._reading or not self._executing):
             diff = cursor.position() - start_pos
             self._append_before_prompt_pos += diff
             self._prompt_pos += diff
@@ -1364,13 +1364,12 @@ class ConsoleWidget(MetaQObjectHasTraits('NewBase', (LoggingConfigurable, QtGui.
 
             elif key == QtCore.Qt.Key_Right:
                 original_block_number = cursor.blockNumber()
-                cursor.movePosition(QtGui.QTextCursor.Right,
+                self._control.moveCursor(QtGui.QTextCursor.Right,
                                 mode=anchormode)
                 if cursor.blockNumber() != original_block_number:
-                    cursor.movePosition(QtGui.QTextCursor.Right,
+                    self._control.moveCursor(QtGui.QTextCursor.Right,
                                         n=len(self._continuation_prompt),
                                         mode=anchormode)
-                self._set_cursor(cursor)
                 intercepted = True
 
             elif key == QtCore.Qt.Key_Home:
@@ -1472,6 +1471,8 @@ class ConsoleWidget(MetaQObjectHasTraits('NewBase', (LoggingConfigurable, QtGui.
                 self._control.setFocus()
             else:
                 self.layout().setCurrentWidget(self._control)
+                # re-enable buffer truncation after paging
+                self._control.document().setMaximumBlockCount(self.buffer_size)
             return True
 
         elif key in (QtCore.Qt.Key_Enter, QtCore.Qt.Key_Return,
@@ -1584,7 +1585,16 @@ class ConsoleWidget(MetaQObjectHasTraits('NewBase', (LoggingConfigurable, QtGui.
             cursor = self._control.textCursor()
             text = self._get_block_plain_text(cursor.block())
             return text[len(prompt):]
-
+    
+    def _get_input_buffer_cursor_pos(self):
+        """Return the cursor position within the input buffer."""
+        cursor = self._control.textCursor()
+        cursor.setPosition(self._prompt_pos, QtGui.QTextCursor.KeepAnchor)
+        input_buffer = cursor.selection().toPlainText()
+        
+        # Don't count continuation prompts
+        return len(input_buffer.replace('\n' + self._continuation_prompt, '\n'))
+    
     def _get_input_buffer_cursor_prompt(self):
         """ Returns the (plain text) prompt for line of the input buffer that
             contains the cursor, or None if there is no such line.
@@ -1749,8 +1759,10 @@ class ConsoleWidget(MetaQObjectHasTraits('NewBase', (LoggingConfigurable, QtGui.
         # case input prompt is active.
         buffer_size = self._control.document().maximumBlockCount()
 
-        if self._executing and not flush and \
-                self._pending_text_flush_interval.isActive():
+        if (self._executing and not flush and
+                self._pending_text_flush_interval.isActive() and
+                cursor.position() == self._get_end_cursor().position()):
+            # Queue the text to insert in case it is being inserted at end
             self._pending_insert_text.append(text)
             if buffer_size > 0:
                 self._pending_insert_text = self._get_last_lines_from_list(
@@ -1894,6 +1906,8 @@ class ConsoleWidget(MetaQObjectHasTraits('NewBase', (LoggingConfigurable, QtGui.
             if self.paging == 'custom':
                 self.custom_page_requested.emit(text)
             else:
+                # disable buffer truncation during paging
+                self._control.document().setMaximumBlockCount(0)
                 self._page_control.clear()
                 cursor = self._page_control.textCursor()
                 if html:
@@ -2086,6 +2100,7 @@ class ConsoleWidget(MetaQObjectHasTraits('NewBase', (LoggingConfigurable, QtGui.
                 self._prompt = prompt
                 self._prompt_html = None
 
+        self._flush_pending_stream()
         self._prompt_pos = self._get_end_cursor().position()
         self._prompt_started()
 

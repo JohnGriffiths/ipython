@@ -20,7 +20,6 @@ from __future__ import print_function
 # Imports
 #-----------------------------------------------------------------------------
 
-import sys
 from io import BytesIO
 
 from IPython.core.display import _pngxy
@@ -96,7 +95,10 @@ def figsize(sizex, sizey):
 
 
 def print_figure(fig, fmt='png', bbox_inches='tight', **kwargs):
-    """Print a figure to an image, and return the resulting bytes
+    """Print a figure to an image, and return the resulting file data
+    
+    Returned data will be bytes unless ``fmt='svg'``,
+    in which case it will be unicode.
     
     Any keyword args are passed to fig.canvas.print_figure,
     such as ``quality`` or ``bbox_inches``.
@@ -115,8 +117,8 @@ def print_figure(fig, fmt='png', bbox_inches='tight', **kwargs):
     # build keyword args
     kw = dict(
         format=fmt,
-        fc=fig.get_facecolor(),
-        ec=fig.get_edgecolor(),
+        facecolor=fig.get_facecolor(),
+        edgecolor=fig.get_edgecolor(),
         dpi=dpi,
         bbox_inches=bbox_inches,
     )
@@ -125,7 +127,10 @@ def print_figure(fig, fmt='png', bbox_inches='tight', **kwargs):
     
     bytes_io = BytesIO()
     fig.canvas.print_figure(bytes_io, **kw)
-    return bytes_io.getvalue()
+    data = bytes_io.getvalue()
+    if fmt == 'svg':
+        data = data.decode('utf-8')
+    return data
     
 def retina_figure(fig, **kwargs):
     """format a figure as a pixel-doubled (retina) PNG"""

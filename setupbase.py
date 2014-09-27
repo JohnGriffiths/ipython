@@ -8,29 +8,25 @@ This includes:
     * Functions for finding things like packages, package data, etc.
     * A function for checking dependencies.
 """
+
+# Copyright (c) IPython Development Team.
+# Distributed under the terms of the Modified BSD License.
+
 from __future__ import print_function
 
-#-------------------------------------------------------------------------------
-#  Copyright (C) 2008  The IPython Development Team
-#
-#  Distributed under the terms of the BSD License.  The full license is in
-#  the file COPYING, distributed as part of this software.
-#-------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------
-# Imports
-#-------------------------------------------------------------------------------
 import errno
 import os
 import sys
 
+from distutils import log
 from distutils.command.build_py import build_py
 from distutils.command.build_scripts import build_scripts
 from distutils.command.install import install
 from distutils.command.install_scripts import install_scripts
 from distutils.cmd import Command
+from fnmatch import fnmatch
 from glob import glob
-from subprocess import call
+from subprocess import check_call
 
 from setupext import install_data_ext
 
@@ -127,39 +123,45 @@ def find_package_data():
     # This is not enough for these things to appear in an sdist.
     # We need to muck with the MANIFEST to get this to work
     
-    # exclude components from the walk,
+    # exclude components and less from the walk;
     # we will build the components separately
-    excludes = ['components']
-    
-    # add 'static/' prefix to exclusions, and tuplify for use in startswith
-    excludes = tuple([pjoin('static', ex) for ex in excludes])
+    excludes = [
+        pjoin('static', 'components'),
+        pjoin('static', '*', 'less'),
+    ]
     
     # walk notebook resources:
     cwd = os.getcwd()
     os.chdir(os.path.join('IPython', 'html'))
     static_data = []
     for parent, dirs, files in os.walk('static'):
-        if parent.startswith(excludes):
+        if any(fnmatch(parent, pat) for pat in excludes):
+            # prevent descending into subdirs
+            dirs[:] = []
             continue
         for f in files:
             static_data.append(pjoin(parent, f))
+    
     components = pjoin("static", "components")
     # select the components we actually need to install
     # (there are lots of resources we bundle for sdist-reasons that we don't actually use)
     static_data.extend([
         pjoin(components, "backbone", "backbone-min.js"),
-        pjoin(components, "bootstrap", "bootstrap", "js", "bootstrap.min.js"),
+        pjoin(components, "bootstrap", "js", "bootstrap.min.js"),
         pjoin(components, "bootstrap-tour", "build", "css", "bootstrap-tour.min.css"),
         pjoin(components, "bootstrap-tour", "build", "js", "bootstrap-tour.min.js"),
-        pjoin(components, "font-awesome", "font", "*.*"),
+        pjoin(components, "font-awesome", "fonts", "*.*"),
         pjoin(components, "google-caja", "html-css-sanitizer-minified.js"),
         pjoin(components, "highlight.js", "build", "highlight.pack.js"),
         pjoin(components, "jquery", "jquery.min.js"),
         pjoin(components, "jquery-ui", "ui", "minified", "jquery-ui.min.js"),
         pjoin(components, "jquery-ui", "themes", "smoothness", "jquery-ui.min.css"),
+        pjoin(components, "jquery-ui", "themes", "smoothness", "images", "*"),
         pjoin(components, "marked", "lib", "marked.js"),
         pjoin(components, "requirejs", "require.js"),
         pjoin(components, "underscore", "underscore-min.js"),
+        pjoin(components, "moment", "moment.js"),
+        pjoin(components, "moment", "min","moment.min.js"),
     ])
     
     # Ship all of Codemirror's CSS and JS
@@ -186,9 +188,13 @@ def find_package_data():
         'IPython.html.tests' : js_tests,
         'IPython.qt.console' : ['resources/icon/*.svg'],
         'IPython.nbconvert' : nbconvert_templates +
-            ['tests/files/*.*', 'exporters/tests/files/*.*'],
+            [
+                'tests/files/*.*',
+                'exporters/tests/files/*.*',
+                'preprocessors/tests/files/*.*',
+            ],
         'IPython.nbconvert.filters' : ['marked.js'],
-        'IPython.nbformat' : ['tests/*.ipynb']
+        'IPython.nbformat' : ['tests/*.ipynb','v3/v3.withref.json']
     }
     
     return package_data
@@ -621,9 +627,6 @@ def get_bdist_wheel():
         
         class bdist_wheel_tag(bdist_wheel):
 
-            def get_tag(self):
-                return ('py%i' % sys.version_info[0], 'none', 'any')
-
             def add_requirements(self, metadata_path):
                 """transform platform-dependent requirements"""
                 pkg_info = read_pkg_info(metadata_path)
@@ -645,7 +648,8 @@ def get_bdist_wheel():
                 for pkg in ("gnureadline", "pyreadline", "mock"):
                     _remove_startswith(requires, pkg)
                 requires.append("gnureadline; sys.platform == 'darwin' and platform.python_implementation == 'CPython'")
-                requires.append("pyreadline (>=2.0); sys.platform == 'win32' and platform.python_implementation == 'CPython'")
+                requires.append("pyreadline (>=2.0); extra == 'terminal' and sys.platform == 'win32' and platform.python_implementation == 'CPython'")
+                requires.append("pyreadline (>=2.0); extra == 'all' and sys.platform == 'win32' and platform.python_implementation == 'CPython'")
                 requires.append("mock; extra == 'test' and python_version < '3.3'")
                 for r in requires:
                     pkg_info['Requires-Dist'] = r
@@ -665,16 +669,26 @@ class CompileCSS(Command):
     Requires various dev dependencies, such as fabric and lessc.
     """
     description = "Recompile Notebook CSS"
-    user_options = []
+    user_options = [
+        ('minify', 'x', "minify CSS"),
+        ('force', 'f', "force recompilation of CSS"),
+    ]
     
     def initialize_options(self):
-        pass
+        self.minify = False
+        self.force = False
     
     def finalize_options(self):
-        pass
+        self.minify = bool(self.minify)
+        self.force = bool(self.force)
     
     def run(self):
-        call("fab css", shell=True, cwd=pjoin(repo_root, "IPython", "html"))
+        check_call([
+                "fab",
+                "css:minify=%s,force=%s" % (self.minify, self.force),
+            ], cwd=pjoin(repo_root, "IPython", "html"),
+        )
+
 
 class JavascriptVersion(Command):
     """write the javascript version to notebook javascript"""
@@ -696,4 +710,21 @@ class JavascriptVersion(Command):
                 if line.startswith("IPython.version"):
                     line = 'IPython.version = "{0}";\n'.format(version)
                 f.write(line)
-            
+
+
+def css_js_prerelease(command, strict=True):
+    """decorator for building js/minified css prior to a release"""
+    class DecoratedCommand(command):
+        def run(self):
+            self.distribution.run_command('jsversion')
+            css = self.distribution.get_command_obj('css')
+            css.minify = True
+            try:
+                self.distribution.run_command('css')
+            except Exception as e:
+                if strict:
+                    raise
+                else:
+                    log.warn("Failed to build css sourcemaps: %s" % e)
+            command.run(self)
+    return DecoratedCommand

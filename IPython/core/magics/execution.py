@@ -971,11 +971,11 @@ python-profiler package from non-free.""")
 
         if cell is None:
             # called as line magic
-            ast_setup = ast.parse("pass")
-            ast_stmt = ast.parse(transform(stmt))
+            ast_setup = self.shell.compile.ast_parse("pass")
+            ast_stmt = self.shell.compile.ast_parse(transform(stmt))
         else:
-            ast_setup = ast.parse(transform(stmt))
-            ast_stmt = ast.parse(transform(cell))
+            ast_setup = self.shell.compile.ast_parse(transform(stmt))
+            ast_stmt = self.shell.compile.ast_parse(transform(cell))
 
         ast_setup = self.shell.transform_ast(ast_setup)
         ast_stmt = self.shell.transform_ast(ast_stmt)
@@ -999,23 +999,38 @@ python-profiler package from non-free.""")
         tc_min = 0.1
 
         t0 = clock()
-        code = compile(timeit_ast, "<magic-timeit>", "exec")
+        code = self.shell.compile(timeit_ast, "<magic-timeit>", "exec")
         tc = clock()-t0
 
         ns = {}
         exec(code, self.shell.user_ns, ns)
         timer.inner = ns["inner"]
 
+        # This is used to check if there is a huge difference between the
+        # best and worst timings.
+        # Issue: https://github.com/ipython/ipython/issues/6471
+        worst_tuning = 0
         if number == 0:
             # determine number so that 0.2 <= total time < 2.0
             number = 1
             for _ in range(1, 10):
-                if timer.timeit(number) >= 0.2:
+                time_number = timer.timeit(number)
+                worst_tuning = max(worst_tuning, time_number / number)
+                if time_number >= 0.2:
                     break
                 number *= 10
         all_runs = timer.repeat(repeat, number)
         best = min(all_runs) / number
         if not quiet :
+            worst = max(all_runs) / number
+            if worst_tuning:
+                worst = max(worst, worst_tuning)
+            # Check best timing is greater than zero to avoid a
+            # ZeroDivisionError.
+            if worst > 4 * best and best > 0:
+                print("The slowest run took %0.2f times longer than the "
+                      "fastest. This could mean that an intermediate result "
+                      "is being cached " % (worst / best))
             print(u"%d loops, best of %d: %s per loop" % (number, repeat,
                                                               _format_time(best, precision)))
             if tc > tc_min:
@@ -1095,7 +1110,7 @@ python-profiler package from non-free.""")
         tp_min = 0.1
 
         t0 = clock()
-        expr_ast = ast.parse(expr)
+        expr_ast = self.shell.compile.ast_parse(expr)
         tp = clock()-t0
 
         # Apply AST transformations
@@ -1112,7 +1127,7 @@ python-profiler package from non-free.""")
             mode = 'exec'
             source = '<timed exec>'
         t0 = clock()
-        code = compile(expr_ast, source, mode)
+        code = self.shell.compile(expr_ast, source, mode)
         tc = clock()-t0
 
         # skew measurement as little as possible

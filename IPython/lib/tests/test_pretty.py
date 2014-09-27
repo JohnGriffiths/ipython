@@ -45,6 +45,10 @@ class MyDict(dict):
     def _repr_pretty_(self, p, cycle):
         p.text("MyDict(...)")
 
+class MyObj(object):
+    def somemethod(self):
+        pass
+
 
 class Dummy1(object):
     def _repr_pretty_(self, p, cycle):
@@ -196,4 +200,32 @@ def test_super_repr():
     sb = SB()
     output = pretty.pretty(super(SA, sb))
     nt.assert_in("SA", output)
-    
+
+
+def test_long_list():
+    lis = list(range(10000))
+    p = pretty.pretty(lis)
+    last2 = p.rsplit('\n', 2)[-2:]
+    nt.assert_equal(last2, [' 999,', ' ...]'])
+
+def test_long_set():
+    s = set(range(10000))
+    p = pretty.pretty(s)
+    last2 = p.rsplit('\n', 2)[-2:]
+    nt.assert_equal(last2, [' 999,', ' ...}'])
+
+def test_long_tuple():
+    tup = tuple(range(10000))
+    p = pretty.pretty(tup)
+    last2 = p.rsplit('\n', 2)[-2:]
+    nt.assert_equal(last2, [' 999,', ' ...)'])
+
+def test_long_dict():
+    d = { n:n for n in range(10000) }
+    p = pretty.pretty(d)
+    last2 = p.rsplit('\n', 2)[-2:]
+    nt.assert_equal(last2, [' 999: 999,', ' ...}'])
+
+def test_unbound_method():
+    output = pretty.pretty(MyObj.somemethod)
+    nt.assert_in('MyObj.somemethod', output)

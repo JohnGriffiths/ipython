@@ -26,13 +26,14 @@ casper.notebook_test(function () {
 
     // run cell 0 again, now interrupting using keyboard shortcut
     this.thenEvaluate(function () {
+        var cell = IPython.notebook.get_cell(0);
         cell.clear_output();
         cell.execute();
     });
 
-    // interrupt using Ctrl-M I keyboard shortcut
-    this.thenEvaluate( function() {
-        IPython.keyboard.trigger_keydown('i');
+    // interrupt using ii keyboard shortcut
+    this.then(function(){
+        this.trigger_keydown('esc', 'i', 'i');
     });
     
     this.wait_for_output(0);

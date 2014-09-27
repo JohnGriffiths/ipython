@@ -1,21 +1,12 @@
 """The IPython Controller Hub with 0MQ
+
 This is the master object that handles connections from engines and clients,
 and monitors traffic through the various queues.
-
-Authors:
-
-* Min RK
 """
-#-----------------------------------------------------------------------------
-#  Copyright (C) 2010-2011  The IPython Development Team
-#
-#  Distributed under the terms of the BSD License.  The full license is in
-#  the file COPYING, distributed as part of this software.
-#-----------------------------------------------------------------------------
 
-#-----------------------------------------------------------------------------
-# Imports
-#-----------------------------------------------------------------------------
+# Copyright (c) IPython Development Team.
+# Distributed under the terms of the Modified BSD License.
+
 from __future__ import print_function
 
 import json
@@ -75,9 +66,9 @@ def empty_record():
         'result_content' : None,
         'result_buffers' : None,
         'queue' : None,
-        'pyin' : None,
-        'pyout': None,
-        'pyerr': None,
+        'execute_input' : None,
+        'execute_result': None,
+        'error': None,
         'stdout': '',
         'stderr': '',
     }
@@ -103,9 +94,9 @@ def init_record(msg):
         'result_content' : None,
         'result_buffers' : None,
         'queue' : None,
-        'pyin' : None,
-        'pyout': None,
-        'pyerr': None,
+        'execute_input' : None,
+        'execute_result': None,
+        'error': None,
         'stdout': '',
         'stderr': '',
     }
@@ -854,31 +845,30 @@ class Hub(SessionFactory):
 
         parent = msg['parent_header']
         if not parent:
-            self.log.warn("iopub::IOPub message lacks parent: %r", msg)
+            self.log.debug("iopub::IOPub message lacks parent: %r", msg)
             return
         msg_id = parent['msg_id']
         msg_type = msg['header']['msg_type']
         content = msg['content']
-
+        
         # ensure msg_id is in db
         try:
             rec = self.db.get_record(msg_id)
         except KeyError:
-            rec = empty_record()
-            rec['msg_id'] = msg_id
-            self.db.add_record(msg_id, rec)
+            rec = None
+        
         # stream
         d = {}
         if msg_type == 'stream':
             name = content['name']
-            s = rec[name] or ''
+            s = '' if rec is None else rec[name]
             d[name] = s + content['data']
 
-        elif msg_type == 'pyerr':
-            d['pyerr'] = content
-        elif msg_type == 'pyin':
-            d['pyin'] = content['code']
-        elif msg_type in ('display_data', 'pyout'):
+        elif msg_type == 'error':
+            d['error'] = content
+        elif msg_type == 'execute_input':
+            d['execute_input'] = content['code']
+        elif msg_type in ('display_data', 'execute_result'):
             d[msg_type] = content
         elif msg_type == 'status':
             pass
@@ -889,9 +879,19 @@ class Hub(SessionFactory):
 
         if not d:
             return
-
+        
+        if rec is None:
+            # new record
+            rec = empty_record()
+            rec['msg_id'] = msg_id
+            rec.update(d)
+            d = rec
+            update_record = self.db.add_record
+        else:
+            update_record = self.db.update_record
+        
         try:
-            self.db.update_record(msg_id, d)
+            update_record(msg_id, d)
         except Exception:
             self.log.error("DB Error saving iopub message %r", msg_id, exc_info=True)
 
@@ -1325,7 +1325,7 @@ class Hub(SessionFactory):
     def _extract_record(self, rec):
         """decompose a TaskRecord dict into subsection of reply for get_result"""
         io_dict = {}
-        for key in ('pyin', 'pyout', 'pyerr', 'stdout', 'stderr'):
+        for key in ('execute_input', 'execute_result', 'error', 'stdout', 'stderr'):
                 io_dict[key] = rec[key]
         content = { 
             'header': rec['header'],

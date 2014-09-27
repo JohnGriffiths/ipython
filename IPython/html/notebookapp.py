@@ -1,29 +1,19 @@
 # coding: utf-8
-"""A tornado based IPython notebook server.
+"""A tornado based IPython notebook server."""
 
-Authors:
+# Copyright (c) IPython Development Team.
+# Distributed under the terms of the Modified BSD License.
 
-* Brian Granger
-"""
 from __future__ import print_function
-#-----------------------------------------------------------------------------
-#  Copyright (C) 2013  The IPython Development Team
-#
-#  Distributed under the terms of the BSD License.  The full license is in
-#  the file COPYING, distributed as part of this software.
-#-----------------------------------------------------------------------------
 
-#-----------------------------------------------------------------------------
-# Imports
-#-----------------------------------------------------------------------------
-
-# stdlib
+import base64
 import errno
 import io
 import json
 import logging
 import os
 import random
+import re
 import select
 import signal
 import socket
@@ -33,7 +23,6 @@ import time
 import webbrowser
 
 
-# Third party
 # check for pyzmq 2.1.11
 from IPython.utils.zmqrelated import check_for_zmq
 check_for_zmq('2.1.11', 'IPython.html')
@@ -60,35 +49,34 @@ if version_info < (3,1,0):
 
 from tornado import httpserver
 from tornado import web
+from tornado.log import LogFormatter
 
-# Our own libraries
 from IPython.html import DEFAULT_STATIC_FILES_PATH
 from .base.handlers import Template404
 from .log import log_request
 from .services.kernels.kernelmanager import MappingKernelManager
-from .services.notebooks.nbmanager import NotebookManager
-from .services.notebooks.filenbmanager import FileNotebookManager
+from .services.contents.manager import ContentsManager
+from .services.contents.filemanager import FileContentsManager
 from .services.clusters.clustermanager import ClusterManager
 from .services.sessions.sessionmanager import SessionManager
 
 from .base.handlers import AuthenticatedFileHandler, FileFindHandler
 
+from IPython.config import Config
 from IPython.config.application import catch_config_error, boolean_flag
-from IPython.core.application import BaseIPythonApplication
-from IPython.core.profiledir import ProfileDir
-from IPython.consoleapp import IPythonConsoleApp
-from IPython.kernel import swallow_argv
-from IPython.kernel.zmq.session import default_secure
-from IPython.kernel.zmq.kernelapp import (
-    kernel_flags,
-    kernel_aliases,
+from IPython.core.application import (
+    BaseIPythonApplication, base_flags, base_aliases,
 )
+from IPython.core.profiledir import ProfileDir
+from IPython.kernel import KernelManager
+from IPython.kernel.kernelspec import KernelSpecManager
+from IPython.kernel.zmq.session import default_secure, Session
 from IPython.nbformat.sign import NotebookNotary
 from IPython.utils.importstring import import_item
-from IPython.utils.localinterfaces import localhost
 from IPython.utils import submodule
+from IPython.utils.process import check_pid
 from IPython.utils.traitlets import (
-    Dict, Unicode, Integer, List, Bool, Bytes,
+    Dict, Unicode, Integer, List, Bool, Bytes, Instance,
     DottedObjectName, TraitError,
 )
 from IPython.utils import py3compat
@@ -133,36 +121,43 @@ def load_handlers(name):
 
 class NotebookWebApplication(web.Application):
 
-    def __init__(self, ipython_app, kernel_manager, notebook_manager,
-                 cluster_manager, session_manager, log, base_url,
-                 settings_overrides, jinja_env_options):
+    def __init__(self, ipython_app, kernel_manager, contents_manager,
+                 cluster_manager, session_manager, kernel_spec_manager, log,
+                 base_url, default_url, settings_overrides, jinja_env_options):
 
         settings = self.init_settings(
-            ipython_app, kernel_manager, notebook_manager, cluster_manager,
-            session_manager, log, base_url, settings_overrides, jinja_env_options)
+            ipython_app, kernel_manager, contents_manager, cluster_manager,
+            session_manager, kernel_spec_manager, log, base_url, default_url,
+            settings_overrides, jinja_env_options)
         handlers = self.init_handlers(settings)
 
         super(NotebookWebApplication, self).__init__(handlers, **settings)
 
-    def init_settings(self, ipython_app, kernel_manager, notebook_manager,
-                      cluster_manager, session_manager, log, base_url,
-                      settings_overrides, jinja_env_options=None):
+    def init_settings(self, ipython_app, kernel_manager, contents_manager,
+                      cluster_manager, session_manager, kernel_spec_manager,
+                      log, base_url, default_url, settings_overrides,
+                      jinja_env_options=None):
         # Python < 2.6.5 doesn't accept unicode keys in f(**kwargs), and
         # base_url will always be unicode, which will in turn
         # make the patterns unicode, and ultimately result in unicode
         # keys in kwargs to handler._execute(**kwargs) in tornado.
         # This enforces that base_url be ascii in that situation.
-        # 
+        #
         # Note that the URLs these patterns check against are escaped,
         # and thus guaranteed to be ASCII: 'héllo' is really 'h%C3%A9llo'.
         base_url = py3compat.unicode_to_str(base_url, 'ascii')
-        template_path = settings_overrides.get("template_path", os.path.join(os.path.dirname(__file__), "templates"))
+        _template_path = settings_overrides.get("template_path", os.path.join(os.path.dirname(__file__), "templates"))
+        if isinstance(_template_path, str):
+            _template_path = (_template_path,)
+        template_path = [os.path.expanduser(path) for path in _template_path]
+
         jenv_opt = jinja_env_options if jinja_env_options else {}
-        env = Environment(loader=FileSystemLoader(template_path),**jenv_opt )
+        env = Environment(loader=FileSystemLoader(template_path), **jenv_opt)
         settings = dict(
             # basics
             log_function=log_request,
             base_url=base_url,
+            default_url=default_url,
             template_path=template_path,
             static_path=ipython_app.static_file_path,
             static_handler_class = FileFindHandler,
@@ -175,12 +170,14 @@ class NotebookWebApplication(web.Application):
             
             # managers
             kernel_manager=kernel_manager,
-            notebook_manager=notebook_manager,
+            contents_manager=contents_manager,
             cluster_manager=cluster_manager,
             session_manager=session_manager,
+            kernel_spec_manager=kernel_spec_manager,
 
             # IPython stuff
             nbextensions_path = ipython_app.nbextensions_path,
+            websocket_url=ipython_app.websocket_url,
             mathjax_url=ipython_app.mathjax_url,
             config=ipython_app.config,
             jinja2_env=env,
@@ -199,18 +196,29 @@ class NotebookWebApplication(web.Application):
         handlers.extend(load_handlers('auth.logout'))
         handlers.extend(load_handlers('notebook.handlers'))
         handlers.extend(load_handlers('nbconvert.handlers'))
+        handlers.extend(load_handlers('kernelspecs.handlers'))
         handlers.extend(load_handlers('services.kernels.handlers'))
-        handlers.extend(load_handlers('services.notebooks.handlers'))
+        handlers.extend(load_handlers('services.contents.handlers'))
         handlers.extend(load_handlers('services.clusters.handlers'))
         handlers.extend(load_handlers('services.sessions.handlers'))
         handlers.extend(load_handlers('services.nbconvert.handlers'))
+        handlers.extend(load_handlers('services.kernelspecs.handlers'))
         # FIXME: /files/ should be handled by the Contents service when it exists
-        nbm = settings['notebook_manager']
-        if hasattr(nbm, 'notebook_dir'):
-            handlers.extend([
-            (r"/files/(.*)", AuthenticatedFileHandler, {'path' : nbm.notebook_dir}),
+        cm = settings['contents_manager']
+        if hasattr(cm, 'root_dir'):
+            handlers.append(
+            (r"/files/(.*)", AuthenticatedFileHandler, {'path' : cm.root_dir}),
+        )
+        handlers.append(
             (r"/nbextensions/(.*)", FileFindHandler, {'path' : settings['nbextensions_path']}),
-        ])
+        )
+        # set the URL that will be redirected from `/`
+        handlers.append(
+            (r'/?', web.RedirectHandler, {
+                'url' : url_path_join(settings['base_url'], settings['default_url']),
+                'permanent': False, # want 302, not 301
+            })
+        )
         # prepend base_url onto the patterns that we match
         new_handlers = []
         for handler in handlers:
@@ -248,10 +256,14 @@ class NbserverListApp(BaseIPythonApplication):
 # Aliases and Flags
 #-----------------------------------------------------------------------------
 
-flags = dict(kernel_flags)
+flags = dict(base_flags)
 flags['no-browser']=(
     {'NotebookApp' : {'open_browser' : False}},
     "Don't open the notebook in a browser after startup."
+)
+flags['pylab']=(
+    {'NotebookApp' : {'pylab' : 'warn'}},
+    "DISABLED: use %pylab or %matplotlib in the notebook to enable matplotlib."
 )
 flags['no-mathjax']=(
     {'NotebookApp' : {'enable_mathjax' : False}},
@@ -266,16 +278,11 @@ flags['no-mathjax']=(
 )
 
 # Add notebook manager flags
-flags.update(boolean_flag('script', 'FileNotebookManager.save_script',
-               'Auto-save a .py script everytime the .ipynb notebook is saved',
-               'Do not auto-save .py scripts for every notebook'))
+flags.update(boolean_flag('script', 'FileContentsManager.save_script',
+               'DEPRECATED, IGNORED',
+               'DEPRECATED, IGNORED'))
 
-# the flags that are specific to the frontend
-# these must be scrubbed before being passed to the kernel,
-# or it will raise an error on unrecognized flags
-notebook_flags = ['no-browser', 'no-mathjax', 'script', 'no-script']
-
-aliases = dict(kernel_aliases)
+aliases = dict(base_aliases)
 
 aliases.update({
     'ip': 'NotebookApp.ip',
@@ -286,14 +293,8 @@ aliases.update({
     'certfile': 'NotebookApp.certfile',
     'notebook-dir': 'NotebookApp.notebook_dir',
     'browser': 'NotebookApp.browser',
+    'pylab': 'NotebookApp.pylab',
 })
-
-# remove ipkernel flags that are singletons, and don't make sense in
-# multi-kernel evironment:
-aliases.pop('f', None)
-
-notebook_aliases = [u'port', u'port-retries', u'ip', u'keyfile', u'certfile',
-                    u'notebook-dir', u'profile', u'profile-dir']
 
 #-----------------------------------------------------------------------------
 # NotebookApp
@@ -310,9 +311,13 @@ class NotebookApp(BaseIPythonApplication):
         HTML5/Javascript Notebook client.
     """
     examples = _examples
+    aliases = aliases
+    flags = flags
     
-    classes = IPythonConsoleApp.classes + [MappingKernelManager, NotebookManager,
-        FileNotebookManager, NotebookNotary]
+    classes = [
+        KernelManager, ProfileDir, Session, MappingKernelManager,
+        ContentsManager, FileContentsManager, NotebookNotary,
+    ]
     flags = Dict(flags)
     aliases = Dict(aliases)
     
@@ -321,13 +326,19 @@ class NotebookApp(BaseIPythonApplication):
     )
 
     kernel_argv = List(Unicode)
+    
+    _log_formatter_cls = LogFormatter
 
     def _log_level_default(self):
         return logging.INFO
 
+    def _log_datefmt_default(self):
+        """Exclude date from default date format"""
+        return "%H:%M:%S"
+    
     def _log_format_default(self):
         """override default log format to include time"""
-        return u"%(asctime)s.%(msecs).03d [%(name)s]%(highlevel)s %(message)s"
+        return u"%(color)s[%(levelname)1.1s %(asctime)s.%(msecs).03d %(name)s]%(end_color)s %(message)s"
 
     # create requested profiles by default, if they don't exist:
     auto_create = Bool(True)
@@ -340,13 +351,41 @@ class NotebookApp(BaseIPythonApplication):
             self.file_to_run = base
             self.notebook_dir = path
 
-    # Network related information.
-
-    ip = Unicode(config=True,
+    # Network related information
+    
+    allow_origin = Unicode('', config=True,
+        help="""Set the Access-Control-Allow-Origin header
+        
+        Use '*' to allow any origin to access your server.
+        
+        Takes precedence over allow_origin_pat.
+        """
+    )
+    
+    allow_origin_pat = Unicode('', config=True,
+        help="""Use a regular expression for the Access-Control-Allow-Origin header
+        
+        Requests from an origin matching the expression will get replies with:
+        
+            Access-Control-Allow-Origin: origin
+        
+        where `origin` is the origin of the request.
+        
+        Ignored if allow_origin is set.
+        """
+    )
+    
+    allow_credentials = Bool(False, config=True,
+        help="Set the Access-Control-Allow-Credentials: true header"
+    )
+    
+    default_url = Unicode('/tree', config=True,
+        help="The default URL to redirect to from `/`"
+    )
+    
+    ip = Unicode('localhost', config=True,
         help="The IP address the notebook server will listen on."
     )
-    def _ip_default(self):
-        return localhost()
 
     def _ip_changed(self, name, old, new):
         if new == u'*': self.ip = u''
@@ -366,6 +405,14 @@ class NotebookApp(BaseIPythonApplication):
         help="""The full path to a private key file for usage with SSL/TLS."""
     )
     
+    cookie_secret_file = Unicode(config=True,
+        help="""The file where the cookie secret is stored."""
+    )
+    def _cookie_secret_file_default(self):
+        if self.profile_dir is None:
+            return ''
+        return os.path.join(self.profile_dir.security_dir, 'notebook_cookie_secret')
+    
     cookie_secret = Bytes(b'', config=True,
         help="""The random bytes used to secure cookies.
         By default this is a new random number every time you start the Notebook.
@@ -376,7 +423,26 @@ class NotebookApp(BaseIPythonApplication):
         """
     )
     def _cookie_secret_default(self):
-        return os.urandom(1024)
+        if os.path.exists(self.cookie_secret_file):
+            with io.open(self.cookie_secret_file, 'rb') as f:
+                return f.read()
+        else:
+            secret = base64.encodestring(os.urandom(1024))
+            self._write_cookie_secret_file(secret)
+            return secret
+    
+    def _write_cookie_secret_file(self, secret):
+        """write my secret to my secret_file"""
+        self.log.info("Writing notebook server cookie secret to %s", self.cookie_secret_file)
+        with io.open(self.cookie_secret_file, 'wb') as f:
+            f.write(secret)
+        try:
+            os.chmod(self.cookie_secret_file, 0o600)
+        except OSError:
+            self.log.warn(
+                "Could not set permissions on %s",
+                self.cookie_secret_file
+            )
 
     password = Unicode(u'', config=True,
                       help="""Hashed password to use for web authentication.
@@ -406,6 +472,13 @@ class NotebookApp(BaseIPythonApplication):
                       """)
     
     webapp_settings = Dict(config=True,
+        help="DEPRECATED, use tornado_settings"
+    )
+    def _webapp_settings_changed(self, name, old, new):
+        self.log.warn("\n    webapp_settings is deprecated, use tornado_settings.\n")
+        self.tornado_settings = new
+    
+    tornado_settings = Dict(config=True,
             help="Supply overrides for the tornado.web.Application that the "
                  "IPython notebook uses.")
 
@@ -465,13 +538,20 @@ class NotebookApp(BaseIPythonApplication):
     def _nbextensions_path_default(self):
         return [os.path.join(get_ipython_dir(), 'nbextensions')]
 
+    websocket_url = Unicode("", config=True,
+        help="""The base URL for websockets,
+        if it differs from the HTTP server (hint: it almost certainly doesn't).
+        
+        Should be in the form of an HTTP origin: ws[s]://hostname[:port]
+        """
+    )
     mathjax_url = Unicode("", config=True,
         help="""The url for MathJax.js."""
     )
     def _mathjax_url_default(self):
         if not self.enable_mathjax:
             return u''
-        static_url_prefix = self.webapp_settings.get("static_url_prefix",
+        static_url_prefix = self.tornado_settings.get("static_url_prefix",
                          url_path_join(self.base_url, "static")
         )
         
@@ -491,13 +571,7 @@ class NotebookApp(BaseIPythonApplication):
                 return url
         
         # no local mathjax, serve from CDN
-        if self.certfile:
-            # HTTPS: load from Rackspace CDN, because SSL certificate requires it
-            host = u"https://c328740.ssl.cf1.rackcdn.com"
-        else:
-            host = u"http://cdn.mathjax.org"
-        
-        url = host + u"/mathjax/latest/MathJax.js"
+        url = u"https://cdn.mathjax.org/mathjax/latest/MathJax.js"
         self.log.info("Using MathJax from CDN: %s", url)
         return url
     
@@ -508,9 +582,27 @@ class NotebookApp(BaseIPythonApplication):
         else:
             self.log.info("Using MathJax: %s", new)
 
-    notebook_manager_class = DottedObjectName('IPython.html.services.notebooks.filenbmanager.FileNotebookManager',
+    contents_manager_class = DottedObjectName('IPython.html.services.contents.filemanager.FileContentsManager',
         config=True,
-        help='The notebook manager class to use.')
+        help='The notebook manager class to use.'
+    )
+    kernel_manager_class = DottedObjectName('IPython.html.services.kernels.kernelmanager.MappingKernelManager',
+        config=True,
+        help='The kernel manager class to use.'
+    )
+    session_manager_class = DottedObjectName('IPython.html.services.sessions.sessionmanager.SessionManager',
+        config=True,
+        help='The session manager class to use.'
+    )
+    cluster_manager_class = DottedObjectName('IPython.html.services.clusters.clustermanager.ClusterManager',
+        config=True,
+        help='The cluster manager class to use.'
+    )
+
+    kernel_spec_manager = Instance(KernelSpecManager)
+
+    def _kernel_spec_manager_default(self):
+        return KernelSpecManager(ipython_dir=self.ipython_dir)
 
     trust_xheaders = Bool(False, config=True,
         help=("Whether to trust or not X-Scheme/X-Forwarded-Proto and X-Real-Ip/X-Forwarded-For headers"
@@ -526,6 +618,23 @@ class NotebookApp(BaseIPythonApplication):
     notebook_dir = Unicode(py3compat.getcwd(), config=True,
         help="The directory to use for notebooks and kernels."
     )
+    
+    pylab = Unicode('disabled', config=True,
+        help="""
+        DISABLED: use %pylab or %matplotlib in the notebook to enable matplotlib.
+        """
+    )
+    def _pylab_changed(self, name, old, new):
+        """when --pylab is specified, display a warning and exit"""
+        if new != 'warn':
+            backend = ' %s' % new
+        else:
+            backend = ''
+        self.log.error("Support for specifying --pylab on the command line has been removed.")
+        self.log.error(
+            "Please use `%pylab{0}` or `%matplotlib{0}` in the notebook itself.".format(backend)
+        )
+        self.exit(1)
 
     def _notebook_dir_changed(self, name, old, new):
         """Do a bit of validation of the notebook dir."""
@@ -537,7 +646,7 @@ class NotebookApp(BaseIPythonApplication):
             raise TraitError("No such notebook dir: %r" % new)
         
         # setting App.notebook_dir implies setting notebook and kernel dirs as well
-        self.config.FileNotebookManager.notebook_dir = new
+        self.config.FileContentsManager.root_dir = new
         self.config.MappingKernelManager.root_dir = new
         
 
@@ -554,39 +663,34 @@ class NotebookApp(BaseIPythonApplication):
             
             # Use config here, to ensure that it takes higher priority than
             # anything that comes from the profile.
+            c = Config()
             if os.path.isdir(f):
-                self.config.NotebookApp.notebook_dir = f
+                c.NotebookApp.notebook_dir = f
             elif os.path.isfile(f):
-                self.config.NotebookApp.file_to_run = f
+                c.NotebookApp.file_to_run = f
+            self.update_config(c)
 
     def init_kernel_argv(self):
         """construct the kernel arguments"""
-        # Scrub frontend-specific flags
-        self.kernel_argv = swallow_argv(self.argv, notebook_aliases, notebook_flags)
-        if any(arg.startswith(u'--pylab') for arg in self.kernel_argv):
-            self.log.warn('\n    '.join([
-                "Starting all kernels in pylab mode is not recommended,",
-                "and will be disabled in a future release.",
-                "Please use the %matplotlib magic to enable matplotlib instead.",
-                "pylab implies many imports, which can have confusing side effects",
-                "and harm the reproducibility of your notebooks.",
-            ]))
-        # Kernel should inherit default config file from frontend
-        self.kernel_argv.append("--IPKernelApp.parent_appname='%s'" % self.name)
         # Kernel should get *absolute* path to profile directory
-        self.kernel_argv.extend(["--profile-dir", self.profile_dir.location])
+        self.kernel_argv = ["--profile-dir", self.profile_dir.location]
 
     def init_configurables(self):
         # force Session default to be secure
         default_secure(self.config)
-        self.kernel_manager = MappingKernelManager(
+        kls = import_item(self.kernel_manager_class)
+        self.kernel_manager = kls(
             parent=self, log=self.log, kernel_argv=self.kernel_argv,
             connection_dir = self.profile_dir.security_dir,
         )
-        kls = import_item(self.notebook_manager_class)
-        self.notebook_manager = kls(parent=self, log=self.log)
-        self.session_manager = SessionManager(parent=self, log=self.log)
-        self.cluster_manager = ClusterManager(parent=self, log=self.log)
+        kls = import_item(self.contents_manager_class)
+        self.contents_manager = kls(parent=self, log=self.log)
+        kls = import_item(self.session_manager_class)
+        self.session_manager = kls(parent=self, log=self.log,
+                                   kernel_manager=self.kernel_manager,
+                                   contents_manager=self.contents_manager)
+        kls = import_item(self.cluster_manager_class)
+        self.cluster_manager = kls(parent=self, log=self.log)
         self.cluster_manager.update_profiles()
 
     def init_logging(self):
@@ -596,17 +700,22 @@ class NotebookApp(BaseIPythonApplication):
         self.log.propagate = False
         
         # hook up tornado 3's loggers to our app handlers
-        for name in ('access', 'application', 'general'):
-            logger = logging.getLogger('tornado.%s' % name)
-            logger.parent = self.log
-            logger.setLevel(self.log.level)
+        logger = logging.getLogger('tornado')
+        logger.propagate = True
+        logger.parent = self.log
+        logger.setLevel(self.log.level)
     
     def init_webapp(self):
         """initialize tornado webapp and httpserver"""
+        self.tornado_settings['allow_origin'] = self.allow_origin
+        if self.allow_origin_pat:
+            self.tornado_settings['allow_origin_pat'] = re.compile(self.allow_origin_pat)
+        self.tornado_settings['allow_credentials'] = self.allow_credentials
+        
         self.web_app = NotebookWebApplication(
-            self, self.kernel_manager, self.notebook_manager, 
-            self.cluster_manager, self.session_manager,
-            self.log, self.base_url, self.webapp_settings,
+            self, self.kernel_manager, self.contents_manager,
+            self.cluster_manager, self.session_manager, self.kernel_spec_manager,
+            self.log, self.base_url, self.default_url, self.tornado_settings,
             self.jinja_environment_options
         )
         if self.certfile:
@@ -655,7 +764,7 @@ class NotebookApp(BaseIPythonApplication):
 
     @property
     def connection_url(self):
-        ip = self.ip if self.ip else localhost()
+        ip = self.ip if self.ip else 'localhost'
         return self._url(ip)
 
     def _url(self, ip):
@@ -695,8 +804,6 @@ class NotebookApp(BaseIPythonApplication):
         
         This doesn't work on Windows.
         """
-        # FIXME: remove this delay when pyzmq dependency is >= 2.1.11
-        time.sleep(0.1)
         info = self.log.info
         info('interrupted')
         print(self.notebook_info())
@@ -705,7 +812,7 @@ class NotebookApp(BaseIPythonApplication):
         r,w,x = select.select([sys.stdin], [], [], 5)
         if r:
             line = sys.stdin.readline()
-            if line.lower().startswith('y'):
+            if line.lower().startswith('y') and 'n' not in line.lower():
                 self.log.critical("Shutdown confirmed")
                 ioloop.IOLoop.instance().stop()
                 return
@@ -756,7 +863,7 @@ class NotebookApp(BaseIPythonApplication):
 
     def notebook_info(self):
         "Return the current working directory and the server url information"
-        info = self.notebook_manager.info_string() + "\n"
+        info = self.contents_manager.info_string() + "\n"
         info += "%d active kernels \n" % len(self.kernel_manager._kernels)
         return info + "The IPython Notebook is running at: %s" % self.display_url
 
@@ -768,6 +875,7 @@ class NotebookApp(BaseIPythonApplication):
                 'secure': bool(self.certfile),
                 'base_url': self.base_url,
                 'notebook_dir': os.path.abspath(self.notebook_dir),
+                'pid': os.getpid()
                }
 
     def write_server_info_file(self):
@@ -841,8 +949,17 @@ def list_running_servers(profile='default'):
     for file in os.listdir(pd.security_dir):
         if file.startswith('nbserver-'):
             with io.open(os.path.join(pd.security_dir, file), encoding='utf-8') as f:
-                yield json.load(f)
+                info = json.load(f)
 
+            # Simple check whether that process is really still running
+            if check_pid(info['pid']):
+                yield info
+            else:
+                # If the process has died, try to delete its info file
+                try:
+                    os.unlink(file)
+                except OSError:
+                    pass  # TODO: This should warn or log or something
 #-----------------------------------------------------------------------------
 # Main entry point
 #-----------------------------------------------------------------------------

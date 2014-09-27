@@ -92,7 +92,7 @@ class MultiKernelManager(LoggingConfigurable):
     def __contains__(self, kernel_id):
         return kernel_id in self._kernels
 
-    def start_kernel(self, **kwargs):
+    def start_kernel(self, kernel_name='python', **kwargs):
         """Start a new kernel.
 
         The caller can pick a kernel_id by passing one in as a keyword arg,
@@ -111,14 +111,14 @@ class MultiKernelManager(LoggingConfigurable):
         # including things like its transport and ip.
         km = self.kernel_manager_factory(connection_file=os.path.join(
                     self.connection_dir, "kernel-%s.json" % kernel_id),
-                    parent=self, autorestart=True, log=self.log
+                    parent=self, autorestart=True, log=self.log, kernel_name=kernel_name,
         )
         km.start_kernel(**kwargs)
         self._kernels[kernel_id] = km
         return kernel_id
 
     @kernel_method
-    def shutdown_kernel(self, kernel_id, now=False):
+    def shutdown_kernel(self, kernel_id, now=False, restart=False):
         """Shutdown a kernel by its kernel uuid.
 
         Parameters
@@ -127,9 +127,25 @@ class MultiKernelManager(LoggingConfigurable):
             The id of the kernel to shutdown.
         now : bool
             Should the kernel be shutdown forcibly using a signal.
+        restart : bool
+            Will the kernel be restarted?
         """
         self.log.info("Kernel shutdown: %s" % kernel_id)
         self.remove_kernel(kernel_id)
+
+    @kernel_method
+    def request_shutdown(self, kernel_id, restart=False):
+        """Ask a kernel to shut down by its kernel uuid"""
+
+    @kernel_method
+    def finish_shutdown(self, kernel_id, waittime=1, pollinterval=0.1):
+        """Wait for a kernel to finish shutting down, and kill it if it doesn't
+        """
+        self.log.info("Kernel shutdown: %s" % kernel_id)
+
+    @kernel_method
+    def cleanup(self, kernel_id, connection_file=True):
+        """Clean up a kernel's resources"""
 
     def remove_kernel(self, kernel_id):
         """remove a kernel from our mapping.
@@ -143,8 +159,12 @@ class MultiKernelManager(LoggingConfigurable):
 
     def shutdown_all(self, now=False):
         """Shutdown all kernels."""
-        for kid in self.list_kernel_ids():
-            self.shutdown_kernel(kid, now=now)
+        kids = self.list_kernel_ids()
+        for kid in kids:
+            self.request_shutdown(kid)
+        for kid in kids:
+            self.finish_shutdown(kid)
+            self.cleanup(kid)
 
     @kernel_method
     def interrupt_kernel(self, kernel_id):

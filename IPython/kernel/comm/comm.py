@@ -1,26 +1,16 @@
 """Base class for a Comm"""
 
-#-----------------------------------------------------------------------------
-#  Copyright (C) 2013  The IPython Development Team
-#
-#  Distributed under the terms of the BSD License.  The full license is in
-#  the file COPYING, distributed as part of this software.
-#-----------------------------------------------------------------------------
-
-#-----------------------------------------------------------------------------
-# Imports
-#-----------------------------------------------------------------------------
+# Copyright (c) IPython Development Team.
+# Distributed under the terms of the Modified BSD License.
 
 import uuid
 
 from IPython.config import LoggingConfigurable
 from IPython.core.getipython import get_ipython
 
+from IPython.utils.jsonutil import json_clean
 from IPython.utils.traitlets import Instance, Unicode, Bytes, Bool, Dict, Any
 
-#-----------------------------------------------------------------------------
-# Code
-#-----------------------------------------------------------------------------
 
 class Comm(LoggingConfigurable):
     
@@ -33,7 +23,7 @@ class Comm(LoggingConfigurable):
         return self.shell.kernel.iopub_socket
     session = Instance('IPython.kernel.zmq.session.Session')
     def _session_default(self):
-        if self.shell is None:
+        if self.shell is None or not hasattr(self.shell, 'kernel'):
             return
         return self.shell.kernel.session
     
@@ -60,21 +50,22 @@ class Comm(LoggingConfigurable):
         if target_name:
             kwargs['target_name'] = target_name
         super(Comm, self).__init__(**kwargs)
-        get_ipython().comm_manager.register_comm(self)
         if self.primary:
             # I am primary, open my peer.
             self.open(data)
     
     def _publish_msg(self, msg_type, data=None, metadata=None, **keys):
         """Helper for sending a comm message on IOPub"""
-        data = {} if data is None else data
-        metadata = {} if metadata is None else metadata
-        self.session.send(self.iopub_socket, msg_type,
-            dict(data=data, comm_id=self.comm_id, **keys),
-            metadata=metadata,
-            parent=self.shell.get_parent(),
-            ident=self.topic,
-        )
+        if self.session is not None:
+            data = {} if data is None else data
+            metadata = {} if metadata is None else metadata
+            content = json_clean(dict(data=data, comm_id=self.comm_id, **keys))
+            self.session.send(self.iopub_socket, msg_type,
+                content,
+                metadata=json_clean(metadata),
+                parent=self.shell.get_parent(),
+                ident=self.topic,
+            )
     
     def __del__(self):
         """trigger close on gc"""
@@ -86,6 +77,10 @@ class Comm(LoggingConfigurable):
         """Open the frontend-side version of this comm"""
         if data is None:
             data = self._open_data
+        self._closed = False
+        ip = get_ipython()
+        if hasattr(ip, 'comm_manager'):
+            ip.comm_manager.register_comm(self)
         self._publish_msg('comm_open', data, metadata, target_name=self.target_name)
     
     def close(self, data=None, metadata=None):
@@ -96,6 +91,9 @@ class Comm(LoggingConfigurable):
         if data is None:
             data = self._close_data
         self._publish_msg('comm_close', data, metadata)
+        ip = get_ipython()
+        if hasattr(ip, 'comm_manager'):
+            ip.comm_manager.unregister_comm(self)
         self._closed = True
     
     def send(self, data=None, metadata=None):

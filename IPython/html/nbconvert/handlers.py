@@ -1,16 +1,21 @@
+"""Tornado handlers for nbconvert."""
+
+# Copyright (c) IPython Development Team.
+# Distributed under the terms of the Modified BSD License.
+
 import io
 import os
 import zipfile
 
 from tornado import web
 
-from ..base.handlers import IPythonHandler, notebook_path_regex
+from ..base.handlers import (
+    IPythonHandler, FilesRedirectHandler,
+    notebook_path_regex, path_regex,
+)
 from IPython.nbformat.current import to_notebook_json
 
-from IPython.utils import tz
 from IPython.utils.py3compat import cast_bytes
-
-import sys
 
 def find_resource_files(output_files_dir):
     files = []
@@ -73,10 +78,10 @@ class NbconvertFileHandler(IPythonHandler):
     @web.authenticated
     def get(self, format, path='', name=None):
         
-        exporter = get_exporter(format, config=self.config)
+        exporter = get_exporter(format, config=self.config, log=self.log)
         
         path = path.strip('/')
-        model = self.notebook_manager.get_notebook(name=name, path=path)
+        model = self.contents_manager.get_model(name=name, path=path)
 
         self.set_header('Last-Modified', model['last_modified'])
         
@@ -126,6 +131,7 @@ class NbconvertPostHandler(IPythonHandler):
 
         self.finish(output)
 
+
 #-----------------------------------------------------------------------------
 # URL to handler mappings
 #-----------------------------------------------------------------------------
@@ -137,4 +143,5 @@ default_handlers = [
     (r"/nbconvert/%s%s" % (_format_regex, notebook_path_regex),
          NbconvertFileHandler),
     (r"/nbconvert/%s" % _format_regex, NbconvertPostHandler),
+    (r"/nbconvert/html%s" % path_regex, FilesRedirectHandler),
 ]

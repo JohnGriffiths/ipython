@@ -6,23 +6,10 @@ Also defined here are utilities for working with Sessions:
 * A SessionFactory to be used as a base class for configurables that work with
 Sessions.
 * A Message object for convenience that allows attribute-access to the msg dict.
-
-Authors:
-
-* Min RK
-* Brian Granger
-* Fernando Perez
 """
-#-----------------------------------------------------------------------------
-#  Copyright (C) 2010-2011  The IPython Development Team
-#
-#  Distributed under the terms of the BSD License.  The full license is in
-#  the file COPYING, distributed as part of this software.
-#-----------------------------------------------------------------------------
 
-#-----------------------------------------------------------------------------
-# Imports
-#-----------------------------------------------------------------------------
+# Copyright (c) IPython Development Team.
+# Distributed under the terms of the Modified BSD License.
 
 import hashlib
 import hmac
@@ -40,11 +27,20 @@ except:
     cPickle = None
     import pickle
 
+try:
+    # We are using compare_digest to limit the surface of timing attacks
+    from hmac import compare_digest
+except ImportError:
+    # Python < 2.7.7: When digests don't match no feedback is provided,
+    # limiting the surface of attack
+    def compare_digest(a,b): return a == b
+
 import zmq
 from zmq.utils import jsonapi
 from zmq.eventloop.ioloop import IOLoop
 from zmq.eventloop.zmqstream import ZMQStream
 
+from IPython.core.release import kernel_protocol_version
 from IPython.config.configurable import Configurable, LoggingConfigurable
 from IPython.utils import io
 from IPython.utils.importstring import import_item
@@ -55,6 +51,8 @@ from IPython.utils.traitlets import (CBytes, Unicode, Bool, Any, Instance, Set,
                                         DottedObjectName, CUnicode, Dict, Integer,
                                         TraitError,
 )
+from IPython.utils.pickleutil import PICKLE_PROTOCOL
+from IPython.kernel.adapter import adapt
 from IPython.kernel.zmq.serialize import MAX_ITEMS, MAX_BYTES
 
 #-----------------------------------------------------------------------------
@@ -80,10 +78,14 @@ def squash_unicode(obj):
 #-----------------------------------------------------------------------------
 
 # ISO8601-ify datetime objects
-json_packer = lambda obj: jsonapi.dumps(obj, default=date_default)
+# allow unicode
+# disallow nan, because it's not actually valid JSON
+json_packer = lambda obj: jsonapi.dumps(obj, default=date_default,
+    ensure_ascii=False, allow_nan=False,
+)
 json_unpacker = lambda s: jsonapi.loads(s)
 
-pickle_packer = lambda o: pickle.dumps(squash_dates(o),-1)
+pickle_packer = lambda o: pickle.dumps(squash_dates(o), PICKLE_PROTOCOL)
 pickle_unpacker = pickle.loads
 
 default_packer = json_packer
@@ -191,6 +193,7 @@ class Message(object):
 
 def msg_header(msg_id, msg_type, username, session):
     date = datetime.now()
+    version = kernel_protocol_version
     return locals()
 
 def extract_header(msg_or_header):
@@ -221,7 +224,7 @@ class Session(Configurable):
     dict-based IPython message spec. The Session will handle
     serialization/deserialization, security, and metadata.
 
-    Sessions support configurable serialiization via packer/unpacker traits,
+    Sessions support configurable serialization via packer/unpacker traits,
     and signing with HMAC digests via the key/keyfile traits.
 
     Parameters
@@ -305,16 +308,16 @@ class Session(Configurable):
 
     metadata = Dict({}, config=True,
         help="""Metadata dictionary, which serves as the default top-level metadata dict for each message.""")
+    
+    # if 0, no adapting to do.
+    adapt_version = Integer(0)
 
     # message signature related traits:
     
     key = CBytes(b'', config=True,
         help="""execution key, for extra authentication.""")
-    def _key_changed(self, name, old, new):
-        if new:
-            self.auth = hmac.HMAC(new, digestmod=self.digest_mod)
-        else:
-            self.auth = None
+    def _key_changed(self):
+        self._new_auth()
     
     signature_scheme = Unicode('hmac-sha256', config=True,
         help="""The digest scheme used to construct the message signatures.
@@ -327,12 +330,19 @@ class Session(Configurable):
             self.digest_mod = getattr(hashlib, hash_name)
         except AttributeError:
             raise TraitError("hashlib has no such attribute: %s" % hash_name)
+        self._new_auth()
     
     digest_mod = Any()
     def _digest_mod_default(self):
         return hashlib.sha256
     
     auth = Instance(hmac.HMAC)
+    
+    def _new_auth(self):
+        if self.key:
+            self.auth = hmac.HMAC(self.key, digestmod=self.digest_mod)
+        else:
+            self.auth = None
     
     digest_history = Set()
     digest_history_size = Integer(2**16, config=True,
@@ -522,7 +532,7 @@ class Session(Configurable):
         Parameters
         ----------
         msg : dict or Message
-            The nexted message dict as returned by the self.msg method.
+            The next message dict as returned by the self.msg method.
 
         Returns
         -------
@@ -632,6 +642,8 @@ class Session(Configurable):
             io.rprint(msg)
             return
         buffers = [] if buffers is None else buffers
+        if self.adapt_version:
+            msg = adapt(msg, self.adapt_version)
         to_send = self.serialize(msg, ident)
         to_send.extend(buffers)
         longest = max([ len(s) for s in to_send ])
@@ -814,7 +826,7 @@ class Session(Configurable):
                 raise ValueError("Duplicate Signature: %r" % signature)
             self._add_digest(signature)
             check = self.sign(msg_list[1:5])
-            if not signature == check:
+            if not compare_digest(signature, check):
                 raise ValueError("Invalid Signature: %r" % signature)
         if not len(msg_list) >= minlen:
             raise TypeError("malformed message, must have at least %i elements"%minlen)
@@ -830,7 +842,10 @@ class Session(Configurable):
             message['content'] = msg_list[4]
 
         message['buffers'] = msg_list[5:]
-        return message
+        # print("received: %s: %s\n    %s" % (message['msg_type'], message['header'], message['content']))
+        # adapt to the current version
+        return adapt(message)
+        # print("adapted: %s: %s\n     %s" % (adapted['msg_type'], adapted['header'], adapted['content']))
 
 def test_msg2obj():
     am = dict(x=1)

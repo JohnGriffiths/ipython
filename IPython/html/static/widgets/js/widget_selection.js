@@ -1,42 +1,33 @@
-//----------------------------------------------------------------------------
-//  Copyright (C) 2013 The IPython Development Team
-//
-//  Distributed under the terms of the BSD License.  The full license is in
-//  the file COPYING, distributed as part of this software.
-//----------------------------------------------------------------------------
+// Copyright (c) IPython Development Team.
+// Distributed under the terms of the Modified BSD License.
 
-//============================================================================
-// SelectionWidget
-//============================================================================
+define([
+    "widgets/js/widget",
+    "base/js/utils",
+    "jquery",
+    "bootstrap",
+], function(widget, utils, $){
 
-/**
- * @module IPython
- * @namespace IPython
- **/
-
-define(["widgets/js/widget"], function(WidgetManager){
-
-    var DropdownView = IPython.DOMWidgetView.extend({
+    var DropdownView = widget.DOMWidgetView.extend({
         render : function(){
             // Called when view is rendered.
             this.$el
-                .addClass('widget-hbox-single');
+                .addClass('widget-hbox');
             this.$label = $('<div />')
                 .appendTo(this.$el)
-                .addClass('widget-hlabel')
+                .addClass('widget-label')
                 .hide();
             this.$buttongroup = $('<div />')
                 .addClass('widget_item')
                 .addClass('btn-group')
                 .appendTo(this.$el);
-            this.$el_to_style = this.$buttongroup; // Set default element to style
             this.$droplabel = $('<button />')
-                .addClass('btn')
+                .addClass('btn btn-default')
                 .addClass('widget-combo-btn')
                 .html("&nbsp;")
                 .appendTo(this.$buttongroup);
             this.$dropbutton = $('<button />')
-                .addClass('btn')
+                .addClass('btn btn-default')
                 .addClass('dropdown-toggle')
                 .addClass('widget-combo-carrot-btn')
                 .attr('data-toggle', 'dropdown')
@@ -45,6 +36,11 @@ define(["widgets/js/widget"], function(WidgetManager){
             this.$droplist = $('<ul />')
                 .addClass('dropdown-menu')
                 .appendTo(this.$buttongroup);
+
+            this.model.on('change:button_style', function(model, value) {
+                this.update_button_style();
+            }, this);
+            this.update_button_style('');
             
             // Set defaults.
             this.update();
@@ -67,6 +63,8 @@ define(["widgets/js/widget"], function(WidgetManager){
                 var items = this.model.get('value_names');
                 var $replace_droplist = $('<ul />')
                     .addClass('dropdown-menu');
+                // Copy the style
+                $replace_droplist.attr('style', this.$droplist.attr('style'));
                 var that = this;
                 _.each(items, function(item, i) {
                     var item_button = $('<a href="#"/>')
@@ -96,10 +94,46 @@ define(["widgets/js/widget"], function(WidgetManager){
                     this.$label.hide();
                 } else {
                     this.$label.text(description);
+                    MathJax.Hub.Queue(["Typeset",MathJax.Hub,this.$label.get(0)]);
                     this.$label.show();
                 }
             }
             return DropdownView.__super__.update.apply(this);
+        },
+
+        update_button_style: function(previous_trait_value) {
+            var class_map = {
+                primary: ['btn-primary'],
+                success: ['btn-success'],
+                info: ['btn-info'],
+                warning: ['btn-warning'],
+                danger: ['btn-danger']
+            };
+            this.update_mapped_classes(class_map, 'button_style', previous_trait_value, this.$droplabel);
+            this.update_mapped_classes(class_map, 'button_style', previous_trait_value, this.$dropbutton);
+        },
+
+        update_attr: function(name, value) {
+            // Set a css attr of the widget view.
+            if (name.substring(0, 6) == 'border' || name == 'background' || name == 'color') {
+                this.$droplabel.css(name, value);
+                this.$dropbutton.css(name, value);
+                this.$droplist.css(name, value);
+            } else if (name == 'width') {
+                this.$droplist.css(name, value);
+                this.$droplabel.css(name, value);
+            } else if (name == 'padding') {
+                this.$droplist.css(name, value);
+                this.$buttongroup.css(name, value);
+            } else if (name == 'margin') {
+                this.$buttongroup.css(name, value);
+            } else if (name == 'height') {
+                this.$droplabel.css(name, value);
+                this.$dropbutton.css(name, value);
+            } else {
+                this.$droplist.css(name, value);
+                this.$droplabel.css(name, value);
+            }
         },
 
         handle_click: function (e) {
@@ -112,22 +146,20 @@ define(["widgets/js/widget"], function(WidgetManager){
         },
         
     });
-    WidgetManager.register_widget_view('DropdownView', DropdownView);
 
 
-    var RadioButtonsView = IPython.DOMWidgetView.extend({    
+    var RadioButtonsView = widget.DOMWidgetView.extend({    
         render : function(){
             // Called when view is rendered.
             this.$el
                 .addClass('widget-hbox');
             this.$label = $('<div />')
                 .appendTo(this.$el)
-                .addClass('widget-hlabel')
+                .addClass('widget-label')
                 .hide();
             this.$container = $('<div />')
                 .appendTo(this.$el)
                 .addClass('widget-radio-box');
-            this.$el_to_style = this.$container; // Set default element to style
             this.update();
         },
         
@@ -187,10 +219,16 @@ define(["widgets/js/widget"], function(WidgetManager){
                     this.$label.hide();
                 } else {
                     this.$label.text(description);
+                    MathJax.Hub.Queue(["Typeset",MathJax.Hub,this.$label.get(0)]);
                     this.$label.show();
                 }
             }
             return RadioButtonsView.__super__.update.apply(this);
+        },
+
+        update_attr: function(name, value) {
+            // Set a css attr of the widget view.
+            this.$container.css(name, value);
         },
 
         handle_click: function (e) {
@@ -202,23 +240,31 @@ define(["widgets/js/widget"], function(WidgetManager){
             this.touch();
         },
     });
-    WidgetManager.register_widget_view('RadioButtonsView', RadioButtonsView);
+    
 
+    var ToggleButtonsView = widget.DOMWidgetView.extend({
+        initialize: function() {
+            this._css_state = {};
+            ToggleButtonsView.__super__.initialize.apply(this, arguments);
+        },
 
-    var ToggleButtonsView = IPython.DOMWidgetView.extend({
-        render : function(){
+        render: function() {
             // Called when view is rendered.
             this.$el
-                .addClass('widget-hbox-single');
+                .addClass('widget-hbox');
             this.$label = $('<div />')
                 .appendTo(this.$el)
-                .addClass('widget-hlabel')
+                .addClass('widget-label')
                 .hide();
             this.$buttongroup = $('<div />')
                 .addClass('btn-group')
                 .attr('data-toggle', 'buttons-radio')
                 .appendTo(this.$el);
-            this.$el_to_style = this.$buttongroup; // Set default element to style
+
+            this.model.on('change:button_style', function(model, value) {
+                this.update_button_style();
+            }, this);
+            this.update_button_style('');
             this.update();
         },
         
@@ -237,18 +283,19 @@ define(["widgets/js/widget"], function(WidgetManager){
                     if (item.trim().length == 0) {
                         item_html = "&nbsp;";
                     } else {
-                        item_html = IPython.utils.escape_html(item);
+                        item_html = utils.escape_html(item);
                     }
                     var item_query = '[data-value="' + item + '"]';
                     var $item_element = that.$buttongroup.find(item_query);
                     if (!$item_element.length) {
                         $item_element = $('<button/>')
                             .attr('type', 'button')
-                            .addClass('btn')
+                            .addClass('btn btn-default')
                             .html(item_html)
                             .appendTo(that.$buttongroup)
                             .attr('data-value', item)
                             .on('click', $.proxy(that.handle_click, that));
+                        that.update_style_traits($item_element);
                     }
                     if (that.model.get('value_name') == item) {
                         $item_element.addClass('active');
@@ -279,10 +326,44 @@ define(["widgets/js/widget"], function(WidgetManager){
                     this.$label.hide();
                 } else {
                     this.$label.text(description);
+                    MathJax.Hub.Queue(["Typeset",MathJax.Hub,this.$label.get(0)]);
                     this.$label.show();
                 }
             }
             return ToggleButtonsView.__super__.update.apply(this);
+        },
+
+        update_attr: function(name, value) {
+            // Set a css attr of the widget view.
+            this._css_state[name] = value;
+            this.update_style_traits();
+        },
+
+        update_style_traits: function(button) {
+            for (var name in this._css_state) {
+                if (this._css_state.hasOwnProperty(name)) {
+                    if (name == 'margin') {
+                        this.$buttongroup.css(name, this._css_state[name]);
+                    } else if (name != 'width') {
+                        if (button) {
+                            button.css(name, this._css_state[name]);
+                        } else {
+                            this.$buttongroup.find('button').css(name, this._css_state[name]);
+                        }
+                    }
+                }
+            }
+        },
+
+        update_button_style: function(previous_trait_value) {
+            var class_map = {
+                primary: ['btn-primary'],
+                success: ['btn-success'],
+                info: ['btn-info'],
+                warning: ['btn-warning'],
+                danger: ['btn-danger']
+            };
+            this.update_mapped_classes(class_map, 'button_style', previous_trait_value, this.$buttongroup.find('button'));
         },
 
         handle_click: function (e) {
@@ -294,23 +375,21 @@ define(["widgets/js/widget"], function(WidgetManager){
             this.touch();
         },    
     });
-    WidgetManager.register_widget_view('ToggleButtonsView', ToggleButtonsView);
+    
 
-
-    var SelectView = IPython.DOMWidgetView.extend({    
+    var SelectView = widget.DOMWidgetView.extend({    
         render : function(){
             // Called when view is rendered.
             this.$el
                 .addClass('widget-hbox');
             this.$label = $('<div />')
                 .appendTo(this.$el)
-                .addClass('widget-hlabel')
+                .addClass('widget-label')
                 .hide();
             this.$listbox = $('<select />')
-                .addClass('widget-listbox')
+                .addClass('widget-listbox form-control')
                 .attr('size', 6)
                 .appendTo(this.$el);
-            this.$el_to_style = this.$listbox; // Set default element to style
             this.update();
         },
         
@@ -362,10 +441,16 @@ define(["widgets/js/widget"], function(WidgetManager){
                     this.$label.hide();
                 } else {
                     this.$label.text(description);
+                    MathJax.Hub.Queue(["Typeset",MathJax.Hub,this.$label.get(0)]);
                     this.$label.show();
                 }
             }
             return SelectView.__super__.update.apply(this);
+        },
+
+        update_attr: function(name, value) {
+            // Set a css attr of the widget view.
+            this.$listbox.css(name, value);
         },
 
         handle_click: function (e) {
@@ -377,5 +462,11 @@ define(["widgets/js/widget"], function(WidgetManager){
             this.touch();
         },    
     });
-    WidgetManager.register_widget_view('SelectView', SelectView);
+    
+    return {
+        'DropdownView': DropdownView,
+        'RadioButtonsView': RadioButtonsView,
+        'ToggleButtonsView': ToggleButtonsView,
+        'SelectView': SelectView,
+    };
 });

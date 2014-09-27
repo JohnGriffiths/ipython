@@ -1,16 +1,10 @@
-//----------------------------------------------------------------------------
-//  Copyright (C) 2008-2012  The IPython Development Team
-//
-//  Distributed under the terms of the BSD License.  The full license is in
-//  the file COPYING, distributed as part of this software.
-//----------------------------------------------------------------------------
+// Copyright (c) IPython Development Team.
+// Distributed under the terms of the Modified BSD License.
 
-//============================================================================
-// Utilities
-//============================================================================
-IPython.namespace('IPython.utils');
-
-IPython.utils = (function (IPython) {
+define([
+    'base/js/namespace',
+    'jquery',
+], function(IPython, $){
     "use strict";
     
     IPython.load_extensions = function () {
@@ -430,7 +424,7 @@ IPython.utils = (function (IPython) {
     var escape_html = function (text) {
         // escape text to HTML
         return $("<div/>").text(text).html();
-    }
+    };
 
 
     var get_body_data = function(key) {
@@ -439,8 +433,40 @@ IPython.utils = (function (IPython) {
         // until we are building an actual request
         return decodeURIComponent($('body').data(key));
     };
-
-
+    
+    var to_absolute_cursor_pos = function (cm, cursor) {
+        // get the absolute cursor position from CodeMirror's col, ch
+        if (!cursor) {
+            cursor = cm.getCursor();
+        }
+        var cursor_pos = cursor.ch;
+        for (var i = 0; i < cursor.line; i++) {
+            cursor_pos += cm.getLine(i).length + 1;
+        }
+        return cursor_pos;
+    };
+    
+    var from_absolute_cursor_pos = function (cm, cursor_pos) {
+        // turn absolute cursor postion into CodeMirror col, ch cursor
+        var i, line;
+        var offset = 0;
+        for (i = 0, line=cm.getLine(i); line !== undefined; i++, line=cm.getLine(i)) {
+            if (offset + line.length < cursor_pos) {
+                offset += line.length + 1;
+            } else {
+                return {
+                    line : i,
+                    ch : cursor_pos - offset,
+                };
+            }
+        }
+        // reached end, return endpoint
+        return {
+            ch : line.length - 1,
+            line : i - 1,
+        };
+    };
+    
     // http://stackoverflow.com/questions/2400935/browser-detection-in-javascript
     var browser = (function() {
         if (typeof navigator === 'undefined') {
@@ -449,7 +475,7 @@ IPython.utils = (function (IPython) {
         }
         var N= navigator.appName, ua= navigator.userAgent, tem;
         var M= ua.match(/(opera|chrome|safari|firefox|msie)\/?\s*(\.?\d+(\.\d+)*)/i);
-        if (M && (tem= ua.match(/version\/([\.\d]+)/i))!= null) M[2]= tem[1];
+        if (M && (tem= ua.match(/version\/([\.\d]+)/i)) !== null) M[2]= tem[1];
         M= M? [M[1], M[2]]: [N, navigator.appVersion,'-?'];
         return M;
     })();
@@ -465,13 +491,13 @@ IPython.utils = (function (IPython) {
         if (navigator.appVersion.indexOf("Mac")!=-1) OSName="MacOS";
         if (navigator.appVersion.indexOf("X11")!=-1) OSName="UNIX";
         if (navigator.appVersion.indexOf("Linux")!=-1) OSName="Linux";
-        return OSName
+        return OSName;
     })();
 
     var is_or_has = function (a, b) {
         // Is b a child of a or a itself?
         return a.has(b).length !==0 || a.is(b);
-    }
+    };
 
     var is_focused = function (e) {
         // Is element e, or one of its children focused?
@@ -486,9 +512,32 @@ IPython.utils = (function (IPython) {
         } else {
             return false;
         }
+    };
+    
+    var mergeopt = function(_class, options, overwrite){
+        options = options || {};
+        overwrite = overwrite || {};
+        return $.extend(true, {}, _class.options_default, options, overwrite);
+    };
+    
+    var ajax_error_msg = function (jqXHR) {
+        // Return a JSON error message if there is one,
+        // otherwise the basic HTTP status text.
+        if (jqXHR.responseJSON && jqXHR.responseJSON.message) {
+            return jqXHR.responseJSON.message;
+        } else {
+            return jqXHR.statusText;
+        }
     }
+    var log_ajax_error = function (jqXHR, status, error) {
+        // log ajax failures with informative messages
+        var msg = "API request failed (" + jqXHR.status + "): ";
+        console.log(jqXHR);
+        msg += ajax_error_msg(jqXHR);
+        console.log(msg);
+    };
 
-    return {
+    var utils = {
         regex_split : regex_split,
         uuid : uuid,
         fixConsole : fixConsole,
@@ -503,11 +552,19 @@ IPython.utils = (function (IPython) {
         splitext : splitext,
         escape_html : escape_html,
         always_new : always_new,
+        to_absolute_cursor_pos : to_absolute_cursor_pos,
+        from_absolute_cursor_pos : from_absolute_cursor_pos,
         browser : browser,
         platform: platform,
         is_or_has : is_or_has,
-        is_focused : is_focused
+        is_focused : is_focused,
+        mergeopt: mergeopt,
+        ajax_error_msg : ajax_error_msg,
+        log_ajax_error : log_ajax_error,
     };
 
-}(IPython));
-
+    // Backwards compatability.
+    IPython.utils = utils;
+    
+    return utils;
+}); 
