@@ -13,7 +13,7 @@ from ..base.handlers import (
     IPythonHandler, FilesRedirectHandler,
     notebook_path_regex, path_regex,
 )
-from IPython.nbformat.current import to_notebook_json
+from IPython.nbformat import from_dict
 
 from IPython.utils.py3compat import cast_bytes
 
@@ -76,12 +76,13 @@ class NbconvertFileHandler(IPythonHandler):
     SUPPORTED_METHODS = ('GET',)
     
     @web.authenticated
-    def get(self, format, path='', name=None):
+    def get(self, format, path):
         
         exporter = get_exporter(format, config=self.config, log=self.log)
         
         path = path.strip('/')
-        model = self.contents_manager.get_model(name=name, path=path)
+        model = self.contents_manager.get(path=path)
+        name = model['name']
 
         self.set_header('Last-Modified', model['last_modified'])
         
@@ -109,19 +110,20 @@ class NbconvertFileHandler(IPythonHandler):
 class NbconvertPostHandler(IPythonHandler):
     SUPPORTED_METHODS = ('POST',)
 
-    @web.authenticated 
+    @web.authenticated
     def post(self, format):
         exporter = get_exporter(format, config=self.config)
         
         model = self.get_json_body()
-        nbnode = to_notebook_json(model['content'])
+        name = model.get('name', 'notebook.ipynb')
+        nbnode = from_dict(model['content'])
         
         try:
             output, resources = exporter.from_notebook_node(nbnode)
         except Exception as e:
             raise web.HTTPError(500, "nbconvert failed: %s" % e)
 
-        if respond_zip(self, nbnode.metadata.name, output, resources):
+        if respond_zip(self, name, output, resources):
             return
 
         # MIME type

@@ -35,6 +35,7 @@ from nose.plugins import Plugin
 from nose.util import safe_str
 
 from IPython.utils.process import is_cmd_found
+from IPython.utils.py3compat import bytes_to_str
 from IPython.utils.importstring import import_item
 from IPython.testing.plugin.ipdoctest import IPythonDoctest
 from IPython.external.decorators import KnownFailure, knownfailureif
@@ -131,12 +132,13 @@ have['pymongo'] = test_for('pymongo')
 have['pygments'] = test_for('pygments')
 have['qt'] = test_for('IPython.external.qt')
 have['sqlite3'] = test_for('sqlite3')
-have['tornado'] = test_for('tornado.version_info', (3,1,0), callback=None)
+have['tornado'] = test_for('tornado.version_info', (4,0), callback=None)
 have['jinja2'] = test_for('jinja2')
 have['mistune'] = test_for('mistune')
 have['requests'] = test_for('requests')
 have['sphinx'] = test_for('sphinx')
 have['jsonschema'] = test_for('jsonschema')
+have['terminado'] = test_for('terminado')
 have['casperjs'] = is_cmd_found('casperjs')
 have['phantomjs'] = is_cmd_found('phantomjs')
 have['slimerjs'] = is_cmd_found('slimerjs')
@@ -264,6 +266,8 @@ if not have['jinja2']:
     sec.exclude('notebookapp')
 if not have['pygments'] or not have['jinja2']:
     sec.exclude('nbconvert')
+if not have['terminado']:
+    sec.exclude('terminal')
 
 # config:
 # Config files aren't really importable stand-alone
@@ -342,8 +346,9 @@ class ExclusionPlugin(Plugin):
 class StreamCapturer(Thread):
     daemon = True  # Don't hang if main thread crashes
     started = False
-    def __init__(self):
+    def __init__(self, echo=False):
         super(StreamCapturer, self).__init__()
+        self.echo = echo
         self.streams = []
         self.buffer = BytesIO()
         self.readfd, self.writefd = os.pipe()
@@ -358,6 +363,8 @@ class StreamCapturer(Thread):
 
             with self.buffer_lock:
                 self.buffer.write(chunk)
+            if self.echo:
+                sys.stdout.write(bytes_to_str(chunk))
     
         os.close(self.readfd)
         os.close(self.writefd)

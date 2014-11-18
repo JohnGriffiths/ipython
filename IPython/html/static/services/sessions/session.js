@@ -15,7 +15,6 @@ define([
      * all other operations, the kernel object should be used.
      *
      * Options should include:
-     *  - notebook_name: the notebook name
      *  - notebook_path: the path (not including name) to the notebook
      *  - kernel_name: the type of kernel (e.g. python3)
      *  - base_url: the root url of the notebook server
@@ -28,7 +27,6 @@ define([
     var Session = function (options) {
         this.id = null;
         this.notebook_model = {
-            name: options.notebook_name,
             path: options.notebook_path
         };
         this.kernel_model = {
@@ -99,7 +97,9 @@ define([
     Session.prototype.start = function (success, error) {
         var that = this;
         var on_success = function (data, status, xhr) {
-            if (!that.kernel) {
+            if (that.kernel) {
+                that.kernel.name = that.kernel_model.name;
+            } else {
                 var kernel_service_url = utils.url_path_join(that.base_url, "api/kernels");
                 that.kernel = new kernel.Kernel(kernel_service_url, that.ws_url, that.notebook, that.kernel_model.name);
             }
@@ -154,15 +154,11 @@ define([
      * undefined, then they will not be changed.
      *
      * @function rename_notebook
-     * @param {string} [name] - new notebook name
-     * @param {string} [path] - new path to notebook
+     * @param {string} [path] - new notebook path
      * @param {function} [success] - function executed on ajax success
      * @param {function} [error] - functon executed on ajax error
      */
-    Session.prototype.rename_notebook = function (name, path, success, error) {
-        if (name !== undefined) {
-            this.notebook_model.name = name;
-        }
+    Session.prototype.rename_notebook = function (path, success, error) {
         if (path !== undefined) {
             this.notebook_model.path = path;
         }
@@ -208,7 +204,6 @@ define([
      * fresh. If options are given, they can include any of the
      * following:
      *
-     * - notebook_name - the name of the notebook
      * - notebook_path - the path to the notebook
      * - kernel_name - the name (type) of the kernel
      *
@@ -220,9 +215,6 @@ define([
     Session.prototype.restart = function (options, success, error) {
         var that = this;
         var start = function () {
-            if (options && options.notebook_name) {
-                that.notebook_model.name = options.notebook_name;
-            }
             if (options && options.notebook_path) {
                 that.notebook_model.path = options.notebook_path;
             }
@@ -238,8 +230,8 @@ define([
     // Helper functions
 
     /**
-     * Get the data model for the session, which includes the notebook
-     * (name and path) and kernel (name and id).
+     * Get the data model for the session, which includes the notebook path
+     * and kernel (name and id).
      *
      * @function _get_model
      * @returns {Object} - the data model
@@ -266,7 +258,6 @@ define([
             this.session_url = utils.url_join_encode(this.session_service_url, this.id);
         }
         if (data && data.notebook) {
-            this.notebook_model.name = data.notebook.name;
             this.notebook_model.path = data.notebook.path;
         }
         if (data && data.kernel) {

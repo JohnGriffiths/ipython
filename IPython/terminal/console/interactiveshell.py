@@ -23,6 +23,7 @@ except ImportError:
 
 from IPython.core import page
 from IPython.core import release
+from IPython.terminal.console.zmqhistory import ZMQHistoryManager
 from IPython.utils.warn import warn, error
 from IPython.utils import io
 from IPython.utils.py3compat import string_types, input
@@ -31,7 +32,6 @@ from IPython.utils.tempdir import NamedFileInTemporaryDirectory
 
 from IPython.terminal.interactiveshell import TerminalInteractiveShell
 from IPython.terminal.console.completer import ZMQCompleter
-
 
 class ZMQTerminalInteractiveShell(TerminalInteractiveShell):
     """A subclass of TerminalInteractiveShell that uses the 0MQ kernel"""
@@ -413,6 +413,8 @@ class ZMQTerminalInteractiveShell(TerminalInteractiveShell):
                 # this should not be necessary, but KeyboardInterrupt
                 # handling seems rather unpredictable...
                 self.write("\nKeyboardInterrupt in interact()\n")
+
+        self.client.shell_channel.shutdown()
     
     def _banner1_default(self):
         return "IPython Console {version}\n".format(version=release.version)
@@ -568,3 +570,9 @@ class ZMQTerminalInteractiveShell(TerminalInteractiveShell):
 
         # Turn off the exit flag, so the mainloop can be restarted if desired
         self.exit_now = False
+
+    def init_history(self):
+        """Sets up the command history. """
+        self.history_manager = ZMQHistoryManager(client=self.client) 
+        self.configurables.append(self.history_manager)
+

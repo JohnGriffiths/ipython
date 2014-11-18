@@ -10,8 +10,9 @@ pjoin = os.path.join
 import requests
 import json
 
-from IPython.nbformat.current import (new_notebook, write, new_worksheet,
-                              new_heading_cell, new_code_cell,
+from IPython.nbformat import write
+from IPython.nbformat.v4 import (new_notebook,
+                              new_markdown_cell, new_code_cell,
                               new_output)
 
 from IPython.html.utils import url_path_join
@@ -62,18 +63,18 @@ class FilesTest(NotebookTestBase):
         nbdir = self.notebook_dir.name
         base = self.base_url()
 
-        nb = new_notebook(name='testnb')
-        
-        ws = new_worksheet()
-        nb.worksheets = [ws]
-        ws.cells.append(new_heading_cell(u'Created by test ³'))
-        cc1 = new_code_cell(input=u'print(2*6)')
-        cc1.outputs.append(new_output(output_text=u'12', output_type='stream'))
-        ws.cells.append(cc1)
+        nb = new_notebook(
+            cells=[
+                new_markdown_cell(u'Created by test ³'),
+                new_code_cell("print(2*6)", outputs=[
+                    new_output("stream", text="12"),
+                ])
+            ]
+        )
 
         with io.open(pjoin(nbdir, 'testnb.ipynb'), 'w', 
             encoding='utf-8') as f:
-            write(nb, f, format='ipynb')
+            write(nb, f, version=4)
 
         with io.open(pjoin(nbdir, 'test.bin'), 'wb') as f:
             f.write(b'\xff' + os.urandom(5))
@@ -98,7 +99,23 @@ class FilesTest(NotebookTestBase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.headers['content-type'], 'text/plain')
         self.assertEqual(r.text, 'foobar')
+    
+    def test_download(self):
+        nbdir = self.notebook_dir.name
+        base = self.base_url()
+        
+        text = 'hello'
+        with open(pjoin(nbdir, 'test.txt'), 'w') as f:
+            f.write(text)
+        
+        r = requests.get(url_path_join(base, 'files', 'test.txt'))
+        disposition = r.headers.get('Content-Disposition', '')
+        self.assertNotIn('attachment', disposition)
 
+        r = requests.get(url_path_join(base, 'files', 'test.txt') + '?download=1')
+        disposition = r.headers.get('Content-Disposition', '')
+        self.assertIn('attachment', disposition)
+        self.assertIn('filename="test.txt"', disposition)
 
     def test_old_files_redirect(self):
         """pre-2.0 'files/' prefixed links are properly redirected"""

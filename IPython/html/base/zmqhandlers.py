@@ -1,33 +1,28 @@
+# coding: utf-8
 """Tornado handlers for WebSocket <-> ZMQ sockets."""
 
 # Copyright (c) IPython Development Team.
 # Distributed under the terms of the Modified BSD License.
 
+import os
 import json
 import struct
+import warnings
 
 try:
     from urllib.parse import urlparse # Py 3
 except ImportError:
     from urlparse import urlparse # Py 2
 
-try:
-    from http.cookies import SimpleCookie  # Py 3
-except ImportError:
-    from Cookie import SimpleCookie  # Py 2
-import logging
-
 import tornado
-from tornado import ioloop
-from tornado import web
-from tornado import websocket
+from tornado import gen, ioloop, web
+from tornado.websocket import WebSocketHandler
 
 from IPython.kernel.zmq.session import Session
 from IPython.utils.jsonutil import date_default, extract_dates
-from IPython.utils.py3compat import PY3, cast_unicode
+from IPython.utils.py3compat import cast_unicode
 
 from .handlers import IPythonHandler
-
 
 def serialize_binary_message(msg):
     """serialize a message as a binary blob
@@ -86,8 +81,18 @@ def deserialize_binary_message(bmsg):
     msg['buffers'] = bufs[1:]
     return msg
 
+# ping interval for keeping websockets alive (30 seconds)
+WS_PING_INTERVAL = 30000
 
-class ZMQStreamHandler(websocket.WebSocketHandler):
+if os.environ.get('IPYTHON_ALLOW_DRAFT_WEBSOCKETS_FOR_PHANTOMJS', False):
+    warnings.warn("""Allowing draft76 websocket connections!
+    This should only be done for testing with phantomjs!""")
+    from IPython.html import allow76
+    WebSocketHandler = allow76.AllowDraftWebSocketHandler
+    # draft 76 doesn't support ping
+    WS_PING_INTERVAL = 0
+
+class ZMQStreamHandler(WebSocketHandler):
     
     def check_origin(self, origin):
         """Check Origin == Host or Access-Control-Allow-Origin.
@@ -161,17 +166,6 @@ class ZMQStreamHandler(websocket.WebSocketHandler):
         else:
             self.write_message(msg, binary=isinstance(msg, bytes))
 
-    def allow_draft76(self):
-        """Allow draft 76, until browsers such as Safari update to RFC 6455.
-        
-        This has been disabled by default in tornado in release 2.2.0, and
-        support will be removed in later versions.
-        """
-        return True
-
-# ping interval for keeping websockets alive (30 seconds)
-WS_PING_INTERVAL = 30000
-
 class AuthenticatedZMQStreamHandler(ZMQStreamHandler, IPythonHandler):
     ping_callback = None
     last_ping = 0
@@ -202,13 +196,12 @@ class AuthenticatedZMQStreamHandler(ZMQStreamHandler, IPythonHandler):
         """
         pass
     
-    def get(self, *args, **kwargs):
-        # Check to see that origin matches host directly, including ports
-        # Tornado 4 already does CORS checking
-        if tornado.version_info[0] < 4:
-            if not self.check_origin(self.get_origin()):
-                raise web.HTTPError(403)
+    def pre_get(self):
+        """Run before finishing the GET request
         
+        Extend this method to add logic that should fire before
+        the websocket finishes completing.
+        """
         # authenticate the request before opening the websocket
         if self.get_current_user() is None:
             self.log.warn("Couldn't authenticate WebSocket connection")
@@ -218,14 +211,21 @@ class AuthenticatedZMQStreamHandler(ZMQStreamHandler, IPythonHandler):
             self.session.session = cast_unicode(self.get_argument('session_id'))
         else:
             self.log.warn("No session ID specified")
-        
-        return super(AuthenticatedZMQStreamHandler, self).get(*args, **kwargs)
+    
+    @gen.coroutine
+    def get(self, *args, **kwargs):
+        # pre_get can be a coroutine in subclasses
+        # assign and yield in two step to avoid tornado 3 issues
+        res = self.pre_get()
+        yield gen.maybe_future(res)
+        super(AuthenticatedZMQStreamHandler, self).get(*args, **kwargs)
     
     def initialize(self):
+        self.log.debug("Initializing websocket connection %s", self.request.path)
         self.session = Session(config=self.config)
     
-    def open(self, kernel_id):
-        self.kernel_id = cast_unicode(kernel_id, 'ascii')
+    def open(self, *args, **kwargs):
+        self.log.debug("Opening websocket %s", self.request.path)
         
         # start the pinging
         if self.ping_interval > 0:

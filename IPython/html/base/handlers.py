@@ -25,6 +25,7 @@ except ImportError:
     app_log = logging.getLogger()
 
 import IPython
+from IPython.utils.sysinfo import get_sys_info
 
 from IPython.config import Application
 from IPython.utils.path import filefind
@@ -35,6 +36,8 @@ from IPython.html.utils import is_hidden, url_path_join, url_escape
 # Top-level handlers
 #-----------------------------------------------------------------------------
 non_alphanum = re.compile(r'[^A-Za-z0-9]')
+
+sys_info = json.dumps(get_sys_info())
 
 class AuthenticatedHandler(web.RequestHandler):
     """A RequestHandler with an authenticated user."""
@@ -117,6 +120,10 @@ class IPythonHandler(AuthenticatedHandler):
             return Application.instance().log
         else:
             return app_log
+
+    @property
+    def profile_dir(self):
+        return self.settings.get('profile_dir', '')
     
     #---------------------------------------------------------------
     # URLs
@@ -133,6 +140,12 @@ class IPythonHandler(AuthenticatedHandler):
     @property
     def ws_url(self):
         return self.settings.get('websocket_url', '')
+
+    @property
+    def contents_js_source(self):
+        self.log.debug("Using contents: %s", self.settings.get('contents_js_source',
+            'services/contents'))
+        return self.settings.get('contents_js_source', 'services/contents')
     
     #---------------------------------------------------------------
     # Manager objects
@@ -153,6 +166,10 @@ class IPythonHandler(AuthenticatedHandler):
     @property
     def session_manager(self):
         return self.settings['session_manager']
+    
+    @property
+    def terminal_manager(self):
+        return self.settings['terminal_manager']
     
     @property
     def kernel_spec_manager(self):
@@ -221,6 +238,8 @@ class IPythonHandler(AuthenticatedHandler):
             logged_in=self.logged_in,
             login_available=self.login_available,
             static_url=self.static_url,
+            sys_info=sys_info,
+            contents_js_source=self.contents_js_source,
         )
     
     def get_json_body(self):
@@ -287,7 +306,7 @@ class AuthenticatedFileHandler(IPythonHandler, web.StaticFileHandler):
     @web.authenticated
     def get(self, path):
         if os.path.splitext(path)[1] == '.ipynb':
-            name = os.path.basename(path)
+            name = path.rsplit('/', 1)[-1]
             self.set_header('Content-Type', 'application/json')
             self.set_header('Content-Disposition','attachment; filename="%s"' % name)
         
@@ -407,43 +426,42 @@ class ApiVersionHandler(IPythonHandler):
         # not authenticated, so give as few info as possible
         self.finish(json.dumps({"version":IPython.__version__}))
 
+
 class TrailingSlashHandler(web.RequestHandler):
     """Simple redirect handler that strips trailing slashes
     
     This should be the first, highest priority handler.
     """
     
-    SUPPORTED_METHODS = ['GET']
-    
     def get(self):
         self.redirect(self.request.uri.rstrip('/'))
+    
+    post = put = get
 
 
 class FilesRedirectHandler(IPythonHandler):
     """Handler for redirecting relative URLs to the /files/ handler"""
     def get(self, path=''):
         cm = self.contents_manager
-        if cm.path_exists(path):
+        if cm.dir_exists(path):
             # it's a *directory*, redirect to /tree
             url = url_path_join(self.base_url, 'tree', path)
         else:
             orig_path = path
             # otherwise, redirect to /files
             parts = path.split('/')
-            path = '/'.join(parts[:-1])
-            name = parts[-1]
 
-            if not cm.file_exists(name=name, path=path) and 'files' in parts:
+            if not cm.file_exists(path=path) and 'files' in parts:
                 # redirect without files/ iff it would 404
                 # this preserves pre-2.0-style 'files/' links
                 self.log.warn("Deprecated files/ URL: %s", orig_path)
                 parts.remove('files')
-                path = '/'.join(parts[:-1])
+                path = '/'.join(parts)
 
-            if not cm.file_exists(name=name, path=path):
+            if not cm.file_exists(path=path):
                 raise web.HTTPError(404)
 
-            url = url_path_join(self.base_url, 'files', path, name)
+            url = url_path_join(self.base_url, 'files', path)
         url = url_escape(url)
         self.log.debug("Redirecting %s to %s", self.request.path, url)
         self.redirect(url)
@@ -453,11 +471,9 @@ class FilesRedirectHandler(IPythonHandler):
 # URL pattern fragments for re-use
 #-----------------------------------------------------------------------------
 
-path_regex = r"(?P<path>(?:/.*)*)"
-notebook_name_regex = r"(?P<name>[^/]+\.ipynb)"
-notebook_path_regex = "%s/%s" % (path_regex, notebook_name_regex)
-file_name_regex = r"(?P<name>[^/]+)"
-file_path_regex = "%s/%s" % (path_regex, file_name_regex)
+# path matches any number of `/foo[/bar...]` or just `/` or ''
+path_regex = r"(?P<path>(?:(?:/[^/]+)+|/?))"
+notebook_path_regex = r"(?P<path>(?:/[^/]+)+\.ipynb)"
 
 #-----------------------------------------------------------------------------
 # URL to handler mappings

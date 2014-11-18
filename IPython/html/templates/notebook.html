@@ -189,12 +189,6 @@ class="notebook_app"
                               <li id="to_raw"
                                   title="Contents will pass through nbconvert unmodified">
                                   <a href="#">Raw NBConvert</a></li>
-                              <li id="to_heading1"><a href="#">Heading 1</a></li>
-                              <li id="to_heading2"><a href="#">Heading 2</a></li>
-                              <li id="to_heading3"><a href="#">Heading 3</a></li>
-                              <li id="to_heading4"><a href="#">Heading 4</a></li>
-                              <li id="to_heading5"><a href="#">Heading 5</a></li>
-                              <li id="to_heading6"><a href="#">Heading 6</a></li>
                             </ul>
                         </li>
                         <li class="divider"></li>
@@ -236,10 +230,16 @@ class="notebook_app"
                     <ul id="kernel_menu" class="dropdown-menu">
                         <li id="int_kernel"
                             title="Send KeyboardInterrupt (CTRL-C) to the Kernel">
-                            <a href="#">Interrupt</a></li>
+                            <a href="#">Interrupt</a>
+                        </li>
                         <li id="restart_kernel"
                             title="Restart the Kernel">
-                            <a href="#">Restart</a></li>
+                            <a href="#">Restart</a>
+                        </li>
+                        <li id="reconnect_kernel"
+                            title="Reconnect to the Kernel">
+                            <a href="#">Reconnect</a>
+                        </li>
                         <li class="divider"></li>
                         <li id="menu-change-kernel" class="dropdown-submenu">
                             <a href="#">Change kernel</a>
@@ -259,7 +259,7 @@ class="notebook_app"
                                     ("http://nbviewer.ipython.org/github/ipython/ipython/tree/2.x/examples/Index.ipynb", "Notebook Help", True),
                                 ),(
                                     ("http://docs.python.org","Python",True),
-                            ("http://help.github.com/articles/github-flavored-markdown","Markdown",True),
+                                    ("http://help.github.com/articles/github-flavored-markdown","Markdown",True),
                                     ("http://docs.scipy.org/doc/numpy/reference/","NumPy",True),
                                     ("http://docs.scipy.org/doc/scipy/reference/","SciPy",True),
                                     ("http://matplotlib.org/contents.html","Matplotlib",True),
@@ -280,7 +280,8 @@ class="notebook_app"
                                 <li class="divider"></li>
                             {% endif %}
                         {% endfor %}
-                        </li>
+                        <li class="divider"></li>
+                        <li title="About IPython Notebook"><a id="notebook_about" href="#">About</a></li>
                     </ul>
                 </li>
               </ul>
@@ -316,6 +317,9 @@ class="notebook_app"
 
 {% block script %}
 {{super()}}
+<script type="text/javascript">
+    sys_info = {{sys_info}};
+</script>
 
 <script src="{{ static_url("components/text-encoding/lib/encoding.js") }}" charset="utf-8"></script>
 

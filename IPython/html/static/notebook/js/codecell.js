@@ -23,6 +23,7 @@ define([
     'notebook/js/codemirror-ipython'
 ], function(IPython, $, utils, keyboard, cell, outputarea, completer, celltoolbar, CodeMirror, cmpython, cmip) {
     "use strict";
+    
     var Cell = cell.Cell;
 
     /* local util for codemirror */
@@ -79,6 +80,23 @@ define([
         this.input_prompt_number = null;
         this.celltoolbar = null;
         this.output_area = null;
+        // Keep a stack of the 'active' output areas (where active means the 
+        // output area that recieves output).  When a user activates an output
+        // area, it gets pushed to the stack.  Then, when the output area is
+        // deactivated, it's popped from the stack.  When the stack is empty,
+        // the cell's output area is used.
+        this.active_output_areas = [];
+        var that = this;
+        Object.defineProperty(this, 'active_output_area', {
+            get: function() {
+                if (that.active_output_areas && that.active_output_areas.length > 0) {
+                    return that.active_output_areas[that.active_output_areas.length-1];
+                } else {
+                    return that.output_area;
+                }
+            },
+        });
+
         this.last_msg_id = null;
         this.completer = null;
 
@@ -91,8 +109,6 @@ define([
 
         // Attributes we want to override in this subclass.
         this.cell_type = "code";
-
-        var that = this;
         this.element.focusout(
             function() { that.auto_highlight(); }
         );
@@ -116,6 +132,23 @@ define([
     CodeCell.msg_cells = {};
 
     CodeCell.prototype = Object.create(Cell.prototype);
+
+    /**
+     * @method push_output_area
+     */
+    CodeCell.prototype.push_output_area = function (output_area) {
+        this.active_output_areas.push(output_area);
+    };
+
+    /**
+     * @method pop_output_area
+     */
+    CodeCell.prototype.pop_output_area = function (output_area) {
+        var index = this.active_output_areas.lastIndexOf(output_area);
+        if (index > -1) {
+            this.active_output_areas.splice(index, 1);
+        }
+    };
 
     /**
      * @method auto_highlight
@@ -278,7 +311,12 @@ define([
      * @method execute
      */
     CodeCell.prototype.execute = function () {
-        this.output_area.clear_output();
+        if (!this.kernel || !this.kernel.is_connected()) {
+            console.log("Can't execute, kernel is not connected.");
+            return;
+        }
+
+        this.active_output_area.clear_output();
         
         // Clear widget area
         this.widget_subarea.html('');
@@ -307,6 +345,7 @@ define([
      * @method get_callbacks
      */
     CodeCell.prototype.get_callbacks = function () {
+        var that = this;
         return {
             shell : {
                 reply : $.proxy(this._handle_execute_reply, this),
@@ -316,8 +355,12 @@ define([
                 }
             },
             iopub : {
-                output : $.proxy(this.output_area.handle_output, this.output_area),
-                clear_output : $.proxy(this.output_area.handle_clear_output, this.output_area),
+                output : function() { 
+                    that.active_output_area.handle_output.apply(that.active_output_area, arguments);
+                }, 
+                clear_output : function() { 
+                    that.active_output_area.handle_clear_output.apply(that.active_output_area, arguments);
+                }, 
             },
             input : $.proxy(this._handle_input_request, this)
         };
@@ -351,7 +394,7 @@ define([
      * @private
      */
     CodeCell.prototype._handle_input_request = function (msg) {
-        this.output_area.append_raw_input(msg);
+        this.active_output_area.append_raw_input(msg);
     };
 
 
@@ -382,13 +425,11 @@ define([
 
 
     CodeCell.prototype.collapse_output = function () {
-        this.collapsed = true;
         this.output_area.collapse();
     };
 
 
     CodeCell.prototype.expand_output = function () {
-        this.collapsed = false;
         this.output_area.expand();
         this.output_area.unscroll_area();
     };
@@ -399,7 +440,6 @@ define([
     };
 
     CodeCell.prototype.toggle_output = function () {
-        this.collapsed = Boolean(1 - this.collapsed);
         this.output_area.toggle_output();
     };
 
@@ -457,7 +497,7 @@ define([
 
 
     CodeCell.prototype.clear_output = function (wait) {
-        this.output_area.clear_output(wait);
+        this.active_output_area.clear_output(wait);
         this.set_input_prompt();
     };
 
@@ -467,22 +507,18 @@ define([
     CodeCell.prototype.fromJSON = function (data) {
         Cell.prototype.fromJSON.apply(this, arguments);
         if (data.cell_type === 'code') {
-            if (data.input !== undefined) {
-                this.set_text(data.input);
+            if (data.source !== undefined) {
+                this.set_text(data.source);
                 // make this value the starting point, so that we can only undo
                 // to this state, instead of a blank cell
                 this.code_mirror.clearHistory();
                 this.auto_highlight();
             }
-            if (data.prompt_number !== undefined) {
-                this.set_input_prompt(data.prompt_number);
-            } else {
-                this.set_input_prompt();
-            }
+            this.set_input_prompt(data.execution_count);
             this.output_area.trusted = data.metadata.trusted || false;
             this.output_area.fromJSON(data.outputs);
-            if (data.collapsed !== undefined) {
-                if (data.collapsed) {
+            if (data.metadata.collapsed !== undefined) {
+                if (data.metadata.collapsed) {
                     this.collapse_output();
                 } else {
                     this.expand_output();
@@ -494,16 +530,17 @@ define([
 
     CodeCell.prototype.toJSON = function () {
         var data = Cell.prototype.toJSON.apply(this);
-        data.input = this.get_text();
+        data.source = this.get_text();
         // is finite protect against undefined and '*' value
         if (isFinite(this.input_prompt_number)) {
-            data.prompt_number = this.input_prompt_number;
+            data.execution_count = this.input_prompt_number;
+        } else {
+            data.execution_count = null;
         }
         var outputs = this.output_area.toJSON();
         data.outputs = outputs;
-        data.language = 'python';
         data.metadata.trusted = this.output_area.trusted;
-        data.collapsed = this.output_area.collapsed;
+        data.metadata.collapsed = this.output_area.collapsed;
         return data;
     };
 

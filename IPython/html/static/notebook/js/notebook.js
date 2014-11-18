@@ -11,7 +11,8 @@ define([
     'services/sessions/session',
     'notebook/js/celltoolbar',
     'components/marked/lib/marked',
-    'highlight',
+    'codemirror/lib/codemirror',
+    'codemirror/addon/runmode/runmode',
     'notebook/js/mathjaxutils',
     'base/js/keyboard',
     'notebook/js/tooltip',
@@ -29,7 +30,8 @@ define([
     session, 
     celltoolbar, 
     marked,
-    hljs,
+    CodeMirror,
+    runMode,
     mathjaxutils,
     keyboard,
     tooltip,
@@ -50,6 +52,7 @@ define([
         //      Dictionary of keyword arguments.
         //          events: $(Events) instance
         //          keyboard_manager: KeyboardManager instance
+        //          contents: Contents instance
         //          save_widget: SaveWidget instance
         //          config: dictionary
         //          base_url : string
@@ -61,6 +64,7 @@ define([
         this.notebook_name = options.notebook_name;
         this.events = options.events;
         this.keyboard_manager = options.keyboard_manager;
+        this.contents = options.contents;
         this.save_widget = options.save_widget;
         this.tooltip = new tooltip.Tooltip(this.events);
         this.ws_url = options.ws_url;
@@ -81,19 +85,37 @@ define([
             marked.setOptions({
                 gfm : true,
                 tables: true,
-                langPrefix: "language-",
-                highlight: function(code, lang) {
+                // FIXME: probably want central config for CodeMirror theme when we have js config
+                langPrefix: "cm-s-ipython language-",
+                highlight: function(code, lang, callback) {
                     if (!lang) {
                         // no language, no highlight
-                        return code;
+                        if (callback) {
+                            callback(null, code);
+                            return;
+                        } else {
+                            return code;
+                        }
                     }
-                    var highlighted;
-                    try {
-                        highlighted = hljs.highlight(lang, code, false);
-                    } catch(err) {
-                        highlighted = hljs.highlightAuto(code);
-                    }
-                    return highlighted.value;
+                    utils.requireCodeMirrorMode(lang, function () {
+                        var el = document.createElement("div");
+                        mode = CodeMirror.getMode({}, lang);
+                        if (!mode) {
+                            console.log("No CodeMirror mode: " + lang);
+                            callback(null, code);
+                            return;
+                        }
+                        try {
+                            CodeMirror.runMode(code, mode, el);
+                            callback(null, el.innerHTML);
+                        } catch (err) {
+                            console.log("Failed to highlight " + lang + " code", error);
+                            callback(err, code);
+                        }
+                    }, function (err) {
+                        console.log("No CodeMirror mode: " + lang);
+                        callback(err, code);
+                    });
                 }
             });
         }
@@ -121,10 +143,8 @@ define([
         this.autosave_timer = null;
         // autosave *at most* every two minutes
         this.minimum_autosave_interval = 120000;
-        // single worksheet for now
-        this.worksheet_metadata = {};
         this.notebook_name_blacklist_re = /[\/\\:]/;
-        this.nbformat = 3; // Increment this when changing the nbformat
+        this.nbformat = 4; // Increment this when changing the nbformat
         this.nbformat_minor = 0; // Increment this when changing the nbformat
         this.codemirror_mode = 'ipython';
         this.create_elements();
@@ -207,9 +227,18 @@ define([
         });
         
         this.events.on('spec_changed.Kernel', function(event, data) {
-            that.set_kernelspec_metadata(data);
+            that.metadata.kernelspec = 
+                {name: data.name, display_name: data.display_name};
+        });
+
+        this.events.on('kernel_ready.Kernel', function(event, data) {
+            var kinfo = data.kernel.info_reply;
+            var langinfo = kinfo.language_info || {};
+            if (!langinfo.name)  langinfo.name = kinfo.language;
+                
+            that.metadata.language_info = langinfo;
             // Mode 'null' should be plain, unhighlighted text.
-            cm_mode = data.codemirror_mode || data.language || 'null'
+            var cm_mode = langinfo.codemirror_mode || langinfo.language || 'null';
             that.set_codemirror_mode(cm_mode);
         });
 
@@ -329,21 +358,11 @@ define([
             md: this.metadata, 
             callback: function (md) {
                 that.metadata = md;
-            }, 
+            },
             name: 'Notebook',
             notebook: this,
             keyboard_manager: this.keyboard_manager});
     };
-    
-    Notebook.prototype.set_kernelspec_metadata = function(ks) {
-        var tostore = {};
-        $.map(ks, function(value, field) {
-            if (field !== 'argv' && field !== 'env') {
-                tostore[field] = value;
-            }
-        });
-        this.metadata.kernelspec = tostore;
-    }
 
     // Cell indexing, retrieval, etc.
 
@@ -827,7 +846,7 @@ define([
      * Index will be brought back into the accessible range [0,n]
      *
      * @method insert_cell_at_index
-     * @param [type] {string} in ['code','markdown','heading'], defaults to 'code'
+     * @param [type] {string} in ['code','markdown', 'raw'], defaults to 'code'
      * @param [index] {int} a valid index where to insert cell
      *
      * @return cell {cell|null} created cell or null
@@ -863,15 +882,19 @@ define([
                 notebook: this,
                 tooltip: this.tooltip,
             };
-            if (type === 'code') {
+            switch(type) {
+            case 'code':
                 cell = new codecell.CodeCell(this.kernel, cell_options);
                 cell.set_input_prompt();
-            } else if (type === 'markdown') {
+                break;
+            case 'markdown':
                 cell = new textcell.MarkdownCell(cell_options);
-            } else if (type === 'raw') {
+                break;
+            case 'raw':
                 cell = new textcell.RawCell(cell_options);
-            } else if (type === 'heading') {
-                cell = new textcell.HeadingCell(cell_options);
+                break;
+            default:
+                console.log("invalid cell type: ", type);
             }
 
             if(this._insert_element_at_index(cell.element,index)) {
@@ -1026,7 +1049,7 @@ define([
                     text = '';
                 }
                 // metadata
-                target_cell.metadata = source_cell.metadata
+                target_cell.metadata = source_cell.metadata;
                 // We must show the editor before setting its contents
                 target_cell.unrender();
                 target_cell.set_text(text);
@@ -1079,49 +1102,40 @@ define([
             }
         }
     };
-
+    
+    Notebook.prototype._warn_heading = function () {
+        // warn about heading cells being removed
+        dialog.modal({
+            notebook: this,
+            keyboard_manager: this.keyboard_manager,
+            title : "Use markdown headings",
+            body : $("<p/>").text(
+                'IPython no longer uses special heading cells. ' + 
+                'Instead, write your headings in Markdown cells using # characters:'
+            ).append($('<pre/>').text(
+                '## This is a level 2 heading'
+            )),
+            buttons : {
+                "OK" : {},
+            }
+        });
+    };
+    
     /**
-     * Turn a cell into a heading cell.
+     * Turn a cell into a markdown cell with a heading.
      * 
      * @method to_heading
      * @param {Number} [index] A cell's index
-     * @param {Number} [level] A heading level (e.g., 1 becomes &lt;h1&gt;)
+     * @param {Number} [level] A heading level (e.g., 1 for h1)
      */
     Notebook.prototype.to_heading = function (index, level) {
+        this.to_markdown(index);
         level = level || 1;
         var i = this.index_or_selected(index);
         if (this.is_valid_cell_index(i)) {
-            var source_cell = this.get_cell(i);
-            var target_cell = null;
-            if (source_cell instanceof textcell.HeadingCell) {
-                source_cell.set_level(level);
-            } else {
-                target_cell = this.insert_cell_below('heading',i);
-                var text = source_cell.get_text();
-                if (text === source_cell.placeholder) {
-                    text = '';
-                }
-                //metadata
-                target_cell.metadata = source_cell.metadata;
-                // We must show the editor before setting its contents
-                target_cell.set_level(level);
-                target_cell.unrender();
-                target_cell.set_text(text);
-                // make this value the starting point, so that we can only undo
-                // to this state, instead of a blank cell
-                target_cell.code_mirror.clearHistory();
-                source_cell.element.remove();
-                this.select(i);
-                var cursor = source_cell.code_mirror.getCursor();
-                target_cell.code_mirror.setCursor(cursor);
-                if ((source_cell instanceof textcell.TextCell) && source_cell.rendered) {
-                    target_cell.render();
-                }
-            }
+            var cell = this.get_cell(i);
+            cell.set_heading_level(level);
             this.set_dirty(true);
-            this.events.trigger('selected_cell_type_changed.Notebook',
-                {'cell_type':'heading',level:level}
-            );
         }
     };
 
@@ -1237,8 +1251,6 @@ define([
      * @method split_cell
      */
     Notebook.prototype.split_cell = function () {
-        var mdc = textcell.MarkdownCell;
-        var rc = textcell.RawCell;
         var cell = this.get_selected_cell();
         if (cell.is_splittable()) {
             var texta = cell.get_pre_cursor();
@@ -1257,8 +1269,6 @@ define([
      * @method merge_cell_above
      */
     Notebook.prototype.merge_cell_above = function () {
-        var mdc = textcell.MarkdownCell;
-        var rc = textcell.RawCell;
         var index = this.get_selected_index();
         var cell = this.get_cell(index);
         var render = cell.rendered;
@@ -1294,8 +1304,6 @@ define([
      * @method merge_cell_below
      */
     Notebook.prototype.merge_cell_below = function () {
-        var mdc = textcell.MarkdownCell;
-        var rc = textcell.RawCell;
         var index = this.get_selected_index();
         var cell = this.get_cell(index);
         var render = cell.rendered;
@@ -1349,7 +1357,7 @@ define([
      * @method collapse_all_output
      */
     Notebook.prototype.collapse_all_output = function () {
-        $.map(this.get_cells(), function (cell, i) {
+        this.get_cells().map(function (cell, i) {
             if (cell instanceof codecell.CodeCell) {
                 cell.collapse_output();
             }
@@ -1379,7 +1387,7 @@ define([
      * @method expand_all_output
      */
     Notebook.prototype.expand_all_output = function () {
-        $.map(this.get_cells(), function (cell, i) {
+        this.get_cells().map(function (cell, i) {
             if (cell instanceof codecell.CodeCell) {
                 cell.expand_output();
             }
@@ -1409,7 +1417,7 @@ define([
      * @method clear_all_output
      */
     Notebook.prototype.clear_all_output = function () {
-        $.map(this.get_cells(), function (cell, i) {
+        this.get_cells().map(function (cell, i) {
             if (cell instanceof codecell.CodeCell) {
                 cell.clear_output();
             }
@@ -1438,7 +1446,7 @@ define([
      * @method scroll_all_output
      */
     Notebook.prototype.scroll_all_output = function () {
-        $.map(this.get_cells(), function (cell, i) {
+        this.get_cells().map(function (cell, i) {
             if (cell instanceof codecell.CodeCell) {
                 cell.scroll_output();
             }
@@ -1467,7 +1475,7 @@ define([
      * @method toggle_all_output
      */
     Notebook.prototype.toggle_all_output = function () {
-        $.map(this.get_cells(), function (cell, i) {
+        this.get_cells().map(function (cell, i) {
             if (cell instanceof codecell.CodeCell) {
                 cell.toggle_output();
             }
@@ -1497,7 +1505,7 @@ define([
      * @method toggle_all_output_scrolling
      */
     Notebook.prototype.toggle_all_output_scroll = function () {
-        $.map(this.get_cells(), function (cell, i) {
+        this.get_cells().map(function (cell, i) {
             if (cell instanceof codecell.CodeCell) {
                 cell.toggle_output_scroll();
             }
@@ -1529,11 +1537,11 @@ define([
         }
         this.codemirror_mode = newmode;
         codecell.CodeCell.options_default.cm_config.mode = newmode;
-        modename = newmode.name || newmode
-
-        that = this;
+        var modename = newmode.mode || newmode.name || newmode;
+        
+        var that = this;
         utils.requireCodeMirrorMode(modename, function () {
-            $.map(that.get_cells(), function(cell, i) {
+            that.get_cells().map(function(cell, i) {
                 if (cell.cell_type === 'code'){
                     cell.code_mirror.setOption('mode', newmode);
                     // This is currently redundant, because cm_config ends up as
@@ -1542,7 +1550,7 @@ define([
                     cell.cm_config.mode = newmode;
                 }
             });
-        })
+        });
     };
 
     // Session related things
@@ -1553,7 +1561,6 @@ define([
      * @method start_session
      */
     Notebook.prototype.start_session = function (kernel_name) {
-        var that = this;
         if (this._session_starting) {
             throw new session.SessionAlreadyStarting();
         }
@@ -1635,7 +1642,6 @@ define([
     Notebook.prototype.execute_cell = function () {
         // mode = shift, ctrl, alt
         var cell = this.get_selected_cell();
-        var cell_index = this.find_cell_index(cell);
         
         cell.execute();
         this.command_mode();
@@ -1764,7 +1770,9 @@ define([
      * @param {String} name A new name for this notebook
      */
     Notebook.prototype.set_notebook_name = function (name) {
+        var parent = utils.url_path_split(this.notebook_path)[0];
         this.notebook_name = name;
+        this.notebook_path = utils.url_path_join(parent, name);
     };
 
     /**
@@ -1786,8 +1794,6 @@ define([
     /**
      * Load a notebook from JSON (.ipynb).
      * 
-     * This currently handles one worksheet: others are deleted.
-     * 
      * @method fromJSON
      * @param {Object} data JSON representation of a notebook
      */
@@ -1803,6 +1809,7 @@ define([
         // Save the metadata and name.
         this.metadata = content.metadata;
         this.notebook_name = data.name;
+        this.notebook_path = data.path;
         var trusted = true;
         
         // Trigger an event changing the kernel spec - this will set the default
@@ -1811,49 +1818,29 @@ define([
             this.events.trigger('spec_changed.Kernel', this.metadata.kernelspec);
         }
         
-        // Only handle 1 worksheet for now.
-        var worksheet = content.worksheets[0];
-        if (worksheet !== undefined) {
-            if (worksheet.metadata) {
-                this.worksheet_metadata = worksheet.metadata;
-            }
-            var new_cells = worksheet.cells;
-            ncells = new_cells.length;
-            var cell_data = null;
-            var new_cell = null;
-            for (i=0; i<ncells; i++) {
-                cell_data = new_cells[i];
-                // VERSIONHACK: plaintext -> raw
-                // handle never-released plaintext name for raw cells
-                if (cell_data.cell_type === 'plaintext'){
-                    cell_data.cell_type = 'raw';
-                }
-
-                new_cell = this.insert_cell_at_index(cell_data.cell_type, i);
-                new_cell.fromJSON(cell_data);
-                if (new_cell.cell_type == 'code' && !new_cell.output_area.trusted) {
-                    trusted = false;
-                }
+        // Set the codemirror mode from language_info metadata
+        if (this.metadata.language_info !== undefined) {
+            var langinfo = this.metadata.language_info;
+            // Mode 'null' should be plain, unhighlighted text.
+            var cm_mode = langinfo.codemirror_mode || langinfo.language || 'null';
+            this.set_codemirror_mode(cm_mode);
+        }
+        
+        var new_cells = content.cells;
+        ncells = new_cells.length;
+        var cell_data = null;
+        var new_cell = null;
+        for (i=0; i<ncells; i++) {
+            cell_data = new_cells[i];
+            new_cell = this.insert_cell_at_index(cell_data.cell_type, i);
+            new_cell.fromJSON(cell_data);
+            if (new_cell.cell_type == 'code' && !new_cell.output_area.trusted) {
+                trusted = false;
             }
         }
         if (trusted !== this.trusted) {
             this.trusted = trusted;
             this.events.trigger("trust_changed.Notebook", trusted);
-        }
-        if (content.worksheets.length > 1) {
-            dialog.modal({
-                notebook: this,
-                keyboard_manager: this.keyboard_manager,
-                title : "Multiple worksheets",
-                body : "This notebook has " + data.worksheets.length + " worksheets, " +
-                    "but this version of IPython can only handle the first.  " +
-                    "If you save this notebook, worksheets after the first will be lost.",
-                buttons : {
-                    OK : {
-                        class : "btn-danger"
-                    }
-                }
-            });
         }
     };
 
@@ -1864,6 +1851,10 @@ define([
      * @return {Object} A JSON-friendly representation of this notebook.
      */
     Notebook.prototype.toJSON = function () {
+        // remove the conversion indicator, which only belongs in-memory
+        delete this.metadata.orig_nbformat;
+        delete this.metadata.orig_nbformat_minor;
+
         var cells = this.get_cells();
         var ncells = cells.length;
         var cell_array = new Array(ncells);
@@ -1876,12 +1867,10 @@ define([
             cell_array[i] = cell.toJSON();
         }
         var data = {
-            // Only handle 1 worksheet for now.
-            worksheets : [{
-                cells: cell_array,
-                metadata: this.worksheet_metadata
-            }],
-            metadata : this.metadata
+            cells: cell_array,
+            metadata: this.metadata,
+            nbformat: this.nbformat,
+            nbformat_minor: this.nbformat_minor
         };
         if (trusted != this.trusted) {
             this.trusted = trusted;
@@ -1923,54 +1912,32 @@ define([
      * 
      * @method save_notebook
      */
-    Notebook.prototype.save_notebook = function (extra_settings) {
+    Notebook.prototype.save_notebook = function () {
         // Create a JSON model to be sent to the server.
-        var model = {};
-        model.name = this.notebook_name;
-        model.path = this.notebook_path;
-        model.type = 'notebook';
-        model.format = 'json';
-        model.content = this.toJSON();
-        model.content.nbformat = this.nbformat;
-        model.content.nbformat_minor = this.nbformat_minor;
+        var model = {
+            type : "notebook",
+            content : this.toJSON()
+        };
         // time the ajax call for autosave tuning purposes.
         var start =  new Date().getTime();
-        // We do the call with settings so we can set cache to false.
-        var settings = {
-            processData : false,
-            cache : false,
-            type : "PUT",
-            data : JSON.stringify(model),
-            contentType: 'application/json',
-            dataType : "json",
-            success : $.proxy(this.save_notebook_success, this, start),
-            error : $.proxy(this.save_notebook_error, this)
-        };
-        if (extra_settings) {
-            for (var key in extra_settings) {
-                settings[key] = extra_settings[key];
-            }
-        }
-        this.events.trigger('notebook_saving.Notebook');
-        var url = utils.url_join_encode(
-            this.base_url,
-            'api/contents',
-            this.notebook_path,
-            this.notebook_name
-        );
-        $.ajax(url, settings);
+
+        var that = this;
+        this.contents.save(this.notebook_path, model).then(
+                $.proxy(this.save_notebook_success, this, start),
+                function (error) {
+                    that.events.trigger('notebook_save_failed.Notebook', error);
+                }
+            );
     };
     
     /**
      * Success callback for saving a notebook.
      * 
      * @method save_notebook_success
-     * @param {Integer} start the time when the save request started
+     * @param {Integer} start Time when the save request start
      * @param {Object} data JSON representation of a notebook
-     * @param {String} status Description of response status
-     * @param {jqXHR} xhr jQuery Ajax object
      */
-    Notebook.prototype.save_notebook_success = function (start, data, status, xhr) {
+    Notebook.prototype.save_notebook_success = function (start, data) {
         this.set_dirty(false);
         if (data.message) {
             // save succeeded, but validation failed.
@@ -2023,25 +1990,13 @@ define([
             }
         }
     };
-    
-    /**
-     * Failure callback for saving a notebook.
-     * 
-     * @method save_notebook_error
-     * @param {jqXHR} xhr jQuery Ajax object
-     * @param {String} status Description of response status
-     * @param {String} error HTTP error message
-     */
-    Notebook.prototype.save_notebook_error = function (xhr, status, error) {
-        this.events.trigger('notebook_save_failed.Notebook', [xhr, status, error]);
-    };
 
     /**
      * Explicitly trust the output of this notebook.
      *
      * @method trust_notebook
      */
-    Notebook.prototype.trust_notebook = function (extra_settings) {
+    Notebook.prototype.trust_notebook = function () {
         var body = $("<div>").append($("<p>")
             .text("A trusted IPython notebook may execute hidden malicious code ")
             .append($("<strong>")
@@ -2086,124 +2041,52 @@ define([
         });
     };
 
-    Notebook.prototype.new_notebook = function(){
-        var path = this.notebook_path;
+    Notebook.prototype.copy_notebook = function(){
         var base_url = this.base_url;
-        var settings = {
-            processData : false,
-            cache : false,
-            type : "POST",
-            dataType : "json",
-            async : false,
-            success : function (data, status, xhr){
-                var notebook_name = data.name;
-                window.open(
-                    utils.url_join_encode(
-                        base_url,
-                        'notebooks',
-                        path,
-                        notebook_name
-                    ),
-                    '_blank'
+        var w = window.open();
+        var parent = utils.url_path_split(this.notebook_path)[0];
+        this.contents.copy(this.notebook_path, parent).then(
+            function (data) {
+                w.location = utils.url_join_encode(
+                    base_url, 'notebooks', data.path
                 );
             },
-            error : utils.log_ajax_error,
-        };
-        var url = utils.url_join_encode(
-            base_url,
-            'api/contents',
-            path
+            function(error) {
+                w.close();
+                console.log(error);
+            }
         );
-        $.ajax(url,settings);
     };
 
-
-    Notebook.prototype.copy_notebook = function(){
-        var path = this.notebook_path;
-        var base_url = this.base_url;
-        var settings = {
-            processData : false,
-            cache : false,
-            type : "POST",
-            dataType : "json",
-            data : JSON.stringify({copy_from : this.notebook_name}),
-            async : false,
-            success : function (data, status, xhr) {
-                window.open(utils.url_join_encode(
-                    base_url,
-                    'notebooks',
-                    data.path,
-                    data.name
-                ), '_blank');
-            },
-            error : utils.log_ajax_error,
-        };
-        var url = utils.url_join_encode(
-            base_url,
-            'api/contents',
-            path
-        );
-        $.ajax(url,settings);
-    };
-
-    Notebook.prototype.rename = function (nbname) {
-        var that = this;
-        if (!nbname.match(/\.ipynb$/)) {
-            nbname = nbname + ".ipynb";
+    Notebook.prototype.rename = function (new_name) {
+        if (!new_name.match(/\.ipynb$/)) {
+            new_name = new_name + ".ipynb";
         }
-        var data = {name: nbname};
-        var settings = {
-            processData : false,
-            cache : false,
-            type : "PATCH",
-            data : JSON.stringify(data),
-            dataType: "json",
-            contentType: 'application/json',
-            success : $.proxy(that.rename_success, this),
-            error : $.proxy(that.rename_error, this)
-        };
-        this.events.trigger('rename_notebook.Notebook', data);
-        var url = utils.url_join_encode(
-            this.base_url,
-            'api/contents',
-            this.notebook_path,
-            this.notebook_name
+
+        var that = this;
+        var parent = utils.url_path_split(this.notebook_path)[0];
+        var new_path = utils.url_path_join(parent, new_name);
+        this.contents.rename(this.notebook_path, new_path).then(
+            function (json) {
+                that.notebook_name = json.name;
+                that.notebook_path = json.path;
+                that.session.rename_notebook(json.path);
+                that.events.trigger('notebook_renamed.Notebook', json);
+            },
+            $.proxy(this.rename_error, this)
         );
-        $.ajax(url, settings);
     };
 
     Notebook.prototype.delete = function () {
-        var that = this;
-        var settings = {
-            processData : false,
-            cache : false,
-            type : "DELETE",
-            dataType: "json",
-            error : utils.log_ajax_error,
-        };
-        var url = utils.url_join_encode(
-            this.base_url,
-            'api/contents',
-            this.notebook_path,
-            this.notebook_name
-        );
-        $.ajax(url, settings);
+        this.contents.delete(this.notebook_path);
     };
 
-    
-    Notebook.prototype.rename_success = function (json, status, xhr) {
-        var name = this.notebook_name = json.name;
-        var path = json.path;
-        this.session.rename_notebook(name, path);
-        this.events.trigger('notebook_renamed.Notebook', json);
-    };
-
-    Notebook.prototype.rename_error = function (xhr, status, error) {
+    Notebook.prototype.rename_error = function (error) {
         var that = this;
         var dialog_body = $('<div/>').append(
             $("<p/>").text('This notebook name already exists.')
         );
-        this.events.trigger('notebook_rename_failed.Notebook', [xhr, status, error]);
+        this.events.trigger('notebook_rename_failed.Notebook', error);
         dialog.modal({
             notebook: this,
             keyboard_manager: this.keyboard_manager,
@@ -2214,7 +2097,7 @@ define([
                 "OK": {
                     class: "btn-primary",
                     click: function () {
-                        this.save_widget.rename_notebook({notebook:that});
+                        that.save_widget.rename_notebook({notebook:that});
                 }}
                 },
             open : function (event, ui) {
@@ -2234,29 +2117,16 @@ define([
      * Request a notebook's data from the server.
      * 
      * @method load_notebook
-     * @param {String} notebook_name and path A notebook to load
+     * @param {String} notebook_path A notebook to load
      */
-    Notebook.prototype.load_notebook = function (notebook_name, notebook_path) {
-        var that = this;
-        this.notebook_name = notebook_name;
+    Notebook.prototype.load_notebook = function (notebook_path) {
         this.notebook_path = notebook_path;
-        // We do the call with settings so we can set cache to false.
-        var settings = {
-            processData : false,
-            cache : false,
-            type : "GET",
-            dataType : "json",
-            success : $.proxy(this.load_notebook_success,this),
-            error : $.proxy(this.load_notebook_error,this),
-        };
+        this.notebook_name = utils.url_path_split(this.notebook_path)[1];
         this.events.trigger('notebook_loading.Notebook');
-        var url = utils.url_join_encode(
-            this.base_url,
-            'api/contents',
-            this.notebook_path,
-            this.notebook_name
+        this.contents.get(notebook_path, {type: 'notebook'}).then(
+            $.proxy(this.load_notebook_success, this),
+            $.proxy(this.load_notebook_error, this)
         );
-        $.ajax(url, settings);
     };
 
     /**
@@ -2266,11 +2136,9 @@ define([
      * 
      * @method load_notebook_success
      * @param {Object} data JSON representation of a notebook
-     * @param {String} status Description of response status
-     * @param {jqXHR} xhr jQuery Ajax object
      */
-    Notebook.prototype.load_notebook_success = function (data, status, xhr) {
-        var failed;
+    Notebook.prototype.load_notebook_success = function (data) {
+        var failed, msg;
         try {
             this.fromJSON(data);
         } catch (e) {
@@ -2295,12 +2163,11 @@ define([
             }
 
             if (data.message) {
-                var msg;
                 if (failed) {
-                    msg = "The notebook also failed validation:"
+                    msg = "The notebook also failed validation:";
                 } else {
                     msg = "An invalid notebook may not function properly." +
-                    " The validation error was:"
+                    " The validation error was:";
                 }
                 body.append($("<p>").text(
                     msg
@@ -2330,13 +2197,29 @@ define([
         }
         this.set_dirty(false);
         this.scroll_to_top();
-        if (data.orig_nbformat !== undefined && data.nbformat !== data.orig_nbformat) {
-            var msg = "This notebook has been converted from an older " +
-            "notebook format (v"+data.orig_nbformat+") to the current notebook " +
-            "format (v"+data.nbformat+"). The next time you save this notebook, the " +
-            "newer notebook format will be used and older versions of IPython " +
-            "may not be able to read it. To keep the older version, close the " +
-            "notebook without saving it.";
+        var nbmodel = data.content;
+        var orig_nbformat = nbmodel.metadata.orig_nbformat;
+        var orig_nbformat_minor = nbmodel.metadata.orig_nbformat_minor;
+        if (orig_nbformat !== undefined && nbmodel.nbformat !== orig_nbformat) {
+            var src;
+            if (nbmodel.nbformat > orig_nbformat) {
+                src = " an older notebook format ";
+            } else {
+                src = " a newer notebook format ";
+            }
+            
+            msg = "This notebook has been converted from" + src +
+            "(v"+orig_nbformat+") to the current notebook " +
+            "format (v"+nbmodel.nbformat+"). The next time you save this notebook, the " +
+            "current notebook format will be used.";
+            
+            if (nbmodel.nbformat > orig_nbformat) {
+                msg += " Older versions of IPython may not be able to read the new format.";
+            } else {
+                msg += " Some features of the original notebook may not be available.";
+            }
+            msg += " To preserve the original version, close the " +
+                "notebook without saving it.";
             dialog.modal({
                 notebook: this,
                 keyboard_manager: this.keyboard_manager,
@@ -2348,11 +2231,11 @@ define([
                     }
                 }
             });
-        } else if (data.orig_nbformat_minor !== undefined && data.nbformat_minor !== data.orig_nbformat_minor) {
+        } else if (orig_nbformat_minor !== undefined && nbmodel.nbformat_minor < orig_nbformat_minor) {
             var that = this;
-            var orig_vs = 'v' + data.nbformat + '.' + data.orig_nbformat_minor;
-            var this_vs = 'v' + data.nbformat + '.' + this.nbformat_minor;
-            var msg = "This notebook is version " + orig_vs + ", but we only fully support up to " +
+            var orig_vs = 'v' + nbmodel.nbformat + '.' + orig_nbformat_minor;
+            var this_vs = 'v' + nbmodel.nbformat + '.' + this.nbformat_minor;
+            msg = "This notebook is version " + orig_vs + ", but we only fully support up to " +
             this_vs + ".  You can still work with this notebook, but some features " +
             "introduced in later notebook versions may not be available.";
 
@@ -2398,20 +2281,18 @@ define([
      * Failure callback for loading a notebook from the server.
      * 
      * @method load_notebook_error
-     * @param {jqXHR} xhr jQuery Ajax object
-     * @param {String} status Description of response status
-     * @param {String} error HTTP error message
+     * @param {Error} error
      */
-    Notebook.prototype.load_notebook_error = function (xhr, status, error) {
-        this.events.trigger('notebook_load_failed.Notebook', [xhr, status, error]);
-        utils.log_ajax_error(xhr, status, error);
+    Notebook.prototype.load_notebook_error = function (error) {
+        this.events.trigger('notebook_load_failed.Notebook', error);
         var msg;
-        if (xhr.status === 400) {
-            msg = escape(utils.ajax_error_msg(xhr));
-        } else if (xhr.status === 500) {
+        if (error.name === utils.XHR_ERROR && error.xhr.status === 500) {
+            utils.log_ajax_error(error.xhr, error.xhr_status, error.xhr_error);
             msg = "An unknown error occurred while loading this notebook. " +
             "This version can load notebook formats " +
             "v" + this.nbformat + " or earlier. See the server log for details.";
+        } else {
+            msg = error.message;
         }
         dialog.modal({
             notebook: this,
@@ -2464,17 +2345,12 @@ define([
      * @method list_checkpoints
      */
     Notebook.prototype.list_checkpoints = function () {
-        var url = utils.url_join_encode(
-            this.base_url,
-            'api/contents',
-            this.notebook_path,
-            this.notebook_name,
-            'checkpoints'
-        );
-        $.get(url).done(
-            $.proxy(this.list_checkpoints_success, this)
-        ).fail(
-            $.proxy(this.list_checkpoints_error, this)
+        var that = this;
+        this.contents.list_checkpoints(this.notebook_path).then(
+            $.proxy(this.list_checkpoints_success, this),
+            function(error) {
+                that.events.trigger('list_checkpoints_failed.Notebook', error);
+            }
         );
     };
 
@@ -2483,11 +2359,8 @@ define([
      * 
      * @method list_checkpoint_success
      * @param {Object} data JSON representation of a checkpoint
-     * @param {String} status Description of response status
-     * @param {jqXHR} xhr jQuery Ajax object
      */
-    Notebook.prototype.list_checkpoints_success = function (data, status, xhr) {
-        data = $.parseJSON(data);
+    Notebook.prototype.list_checkpoints_success = function (data) {
         this.checkpoints = data;
         if (data.length) {
             this.last_checkpoint = data[data.length - 1];
@@ -2498,34 +2371,17 @@ define([
     };
 
     /**
-     * Failure callback for listing a checkpoint.
-     * 
-     * @method list_checkpoint_error
-     * @param {jqXHR} xhr jQuery Ajax object
-     * @param {String} status Description of response status
-     * @param {String} error_msg HTTP error message
-     */
-    Notebook.prototype.list_checkpoints_error = function (xhr, status, error_msg) {
-        this.events.trigger('list_checkpoints_failed.Notebook');
-    };
-    
-    /**
      * Create a checkpoint of this notebook on the server from the most recent save.
      * 
      * @method create_checkpoint
      */
     Notebook.prototype.create_checkpoint = function () {
-        var url = utils.url_join_encode(
-            this.base_url,
-            'api/contents',
-            this.notebook_path,
-            this.notebook_name,
-            'checkpoints'
-        );
-        $.post(url).done(
-            $.proxy(this.create_checkpoint_success, this)
-        ).fail(
-            $.proxy(this.create_checkpoint_error, this)
+        var that = this;
+        this.contents.create_checkpoint(this.notebook_path).then(
+            $.proxy(this.create_checkpoint_success, this),
+            function (error) {
+                that.events.trigger('checkpoint_failed.Notebook', error);
+            }
         );
     };
 
@@ -2534,27 +2390,12 @@ define([
      * 
      * @method create_checkpoint_success
      * @param {Object} data JSON representation of a checkpoint
-     * @param {String} status Description of response status
-     * @param {jqXHR} xhr jQuery Ajax object
      */
-    Notebook.prototype.create_checkpoint_success = function (data, status, xhr) {
-        data = $.parseJSON(data);
+    Notebook.prototype.create_checkpoint_success = function (data) {
         this.add_checkpoint(data);
         this.events.trigger('checkpoint_created.Notebook', data);
     };
 
-    /**
-     * Failure callback for creating a checkpoint.
-     * 
-     * @method create_checkpoint_error
-     * @param {jqXHR} xhr jQuery Ajax object
-     * @param {String} status Description of response status
-     * @param {String} error_msg HTTP error message
-     */
-    Notebook.prototype.create_checkpoint_error = function (xhr, status, error_msg) {
-        this.events.trigger('checkpoint_failed.Notebook');
-    };
-    
     Notebook.prototype.restore_checkpoint_dialog = function (checkpoint) {
         var that = this;
         checkpoint = checkpoint || this.last_checkpoint;
@@ -2604,18 +2445,12 @@ define([
      */
     Notebook.prototype.restore_checkpoint = function (checkpoint) {
         this.events.trigger('notebook_restoring.Notebook', checkpoint);
-        var url = utils.url_join_encode(
-            this.base_url,
-            'api/contents',
-            this.notebook_path,
-            this.notebook_name,
-            'checkpoints',
-            checkpoint
-        );
-        $.post(url).done(
-            $.proxy(this.restore_checkpoint_success, this)
-        ).fail(
-            $.proxy(this.restore_checkpoint_error, this)
+        var that = this;
+        this.contents.restore_checkpoint(this.notebook_path, checkpoint).then(
+            $.proxy(this.restore_checkpoint_success, this),
+            function (error) {
+                that.events.trigger('checkpoint_restore_failed.Notebook', error);
+            }
         );
     };
     
@@ -2623,27 +2458,12 @@ define([
      * Success callback for restoring a notebook to a checkpoint.
      * 
      * @method restore_checkpoint_success
-     * @param {Object} data (ignored, should be empty)
-     * @param {String} status Description of response status
-     * @param {jqXHR} xhr jQuery Ajax object
      */
-    Notebook.prototype.restore_checkpoint_success = function (data, status, xhr) {
+    Notebook.prototype.restore_checkpoint_success = function () {
         this.events.trigger('checkpoint_restored.Notebook');
-        this.load_notebook(this.notebook_name, this.notebook_path);
+        this.load_notebook(this.notebook_path);
     };
 
-    /**
-     * Failure callback for restoring a notebook to a checkpoint.
-     * 
-     * @method restore_checkpoint_error
-     * @param {jqXHR} xhr jQuery Ajax object
-     * @param {String} status Description of response status
-     * @param {String} error_msg HTTP error message
-     */
-    Notebook.prototype.restore_checkpoint_error = function (xhr, status, error_msg) {
-        this.events.trigger('checkpoint_restore_failed.Notebook');
-    };
-    
     /**
      * Delete a notebook checkpoint.
      * 
@@ -2652,44 +2472,23 @@ define([
      */
     Notebook.prototype.delete_checkpoint = function (checkpoint) {
         this.events.trigger('notebook_restoring.Notebook', checkpoint);
-        var url = utils.url_join_encode(
-            this.base_url,
-            'api/contents',
-            this.notebook_path,
-            this.notebook_name,
-            'checkpoints',
-            checkpoint
+        var that = this;
+        this.contents.delete_checkpoint(this.notebook_path, checkpoint).then(
+            $.proxy(this.delete_checkpoint_success, this),
+            function (error) {
+                that.events.trigger('checkpoint_delete_failed.Notebook', error);
+            }
         );
-        $.ajax(url, {
-            type: 'DELETE',
-            success: $.proxy(this.delete_checkpoint_success, this),
-            error: $.proxy(this.delete_checkpoint_error, this)
-        });
     };
     
     /**
      * Success callback for deleting a notebook checkpoint
      * 
      * @method delete_checkpoint_success
-     * @param {Object} data (ignored, should be empty)
-     * @param {String} status Description of response status
-     * @param {jqXHR} xhr jQuery Ajax object
      */
-    Notebook.prototype.delete_checkpoint_success = function (data, status, xhr) {
-        this.events.trigger('checkpoint_deleted.Notebook', data);
-        this.load_notebook(this.notebook_name, this.notebook_path);
-    };
-
-    /**
-     * Failure callback for deleting a notebook checkpoint.
-     * 
-     * @method delete_checkpoint_error
-     * @param {jqXHR} xhr jQuery Ajax object
-     * @param {String} status Description of response status
-     * @param {String} error HTTP error message
-     */
-    Notebook.prototype.delete_checkpoint_error = function (xhr, status, error) {
-        this.events.trigger('checkpoint_delete_failed.Notebook', [xhr, status, error]);
+    Notebook.prototype.delete_checkpoint_success = function () {
+        this.events.trigger('checkpoint_deleted.Notebook');
+        this.load_notebook(this.notebook_path);
     };
 
 

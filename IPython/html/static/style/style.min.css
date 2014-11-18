@@ -8070,6 +8070,9 @@ ul.breadcrumb span {
 .item_buttons {
   line-height: 1em;
 }
+.item_buttons .btn {
+  min-width: 13ex;
+}
 .toolbar_info {
   height: 24px;
   line-height: 24px;
@@ -8985,33 +8988,33 @@ div.cell.text_cell.rendered {
 .text_cell.unrendered .text_cell_render {
   display: none;
 }
-.cm-s-heading-1,
-.cm-s-heading-2,
-.cm-s-heading-3,
-.cm-s-heading-4,
-.cm-s-heading-5,
-.cm-s-heading-6 {
+.cm-header-1,
+.cm-header-2,
+.cm-header-3,
+.cm-header-4,
+.cm-header-5,
+.cm-header-6 {
   font-weight: bold;
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
-.cm-s-heading-1 {
-  font-size: 150%;
+.cm-header-1 {
+  font-size: 185.7%;
 }
-.cm-s-heading-2 {
-  font-size: 130%;
+.cm-header-2 {
+  font-size: 157.1%;
 }
-.cm-s-heading-3 {
-  font-size: 120%;
+.cm-header-3 {
+  font-size: 128.6%;
 }
-.cm-s-heading-4 {
+.cm-header-4 {
   font-size: 110%;
 }
-.cm-s-heading-5 {
+.cm-header-5 {
   font-size: 100%;
   font-style: italic;
 }
-.cm-s-heading-6 {
-  font-size: 90%;
+.cm-header-6 {
+  font-size: 100%;
   font-style: italic;
 }
 .widget-area {
@@ -9301,6 +9304,7 @@ div.cell.text_cell.rendered {
 }
 .widget-hbox input[type="checkbox"] {
   margin-top: 9px;
+  margin-bottom: 10px;
 }
 .widget-hbox .widget-label {
   /* Horizontal Label */
@@ -10482,5 +10486,20 @@ span#autosave_status {
   -moz-transform: rotate(45deg);
   -ms-transform: rotate(45deg);
   -o-transform: rotate(45deg);
+}
+.terminal {
+  float: left;
+  border: black solid 5px;
+  font-family: "DejaVu Sans Mono", "Liberation Mono", monospace;
+  font-size: 11px;
+  color: white;
+  background: black;
+}
+.terminal-cursor {
+  color: black;
+  background: white;
+}
+#terminado-container {
+  margin: 8px;
 }
 /*# sourceMappingURL=../style/style.min.css.map */

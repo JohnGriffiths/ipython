@@ -35,7 +35,7 @@ from zmq.eventloop import ioloop
 ioloop.install()
 
 # check for tornado 3.1.0
-msg = "The IPython Notebook requires tornado >= 3.1.0"
+msg = "The IPython Notebook requires tornado >= 4.0"
 try:
     import tornado
 except ImportError:
@@ -44,14 +44,17 @@ try:
     version_info = tornado.version_info
 except AttributeError:
     raise ImportError(msg + ", but you have < 1.1.0")
-if version_info < (3,1,0):
+if version_info < (4,0):
     raise ImportError(msg + ", but you have %s" % tornado.version)
 
 from tornado import httpserver
 from tornado import web
 from tornado.log import LogFormatter, app_log, access_log, gen_log
 
-from IPython.html import DEFAULT_STATIC_FILES_PATH
+from IPython.html import (
+    DEFAULT_STATIC_FILES_PATH,
+    DEFAULT_TEMPLATE_PATH_LIST,
+)
 from .base.handlers import Template404
 from .log import log_request
 from .services.kernels.kernelmanager import MappingKernelManager
@@ -138,7 +141,10 @@ class NotebookWebApplication(web.Application):
                       log, base_url, default_url, settings_overrides,
                       jinja_env_options=None):
 
-        _template_path = settings_overrides.get("template_path", os.path.join(os.path.dirname(__file__), "templates"))
+        _template_path = settings_overrides.get(
+            "template_path",
+            ipython_app.template_file_path,
+        )
         if isinstance(_template_path, str):
             _template_path = (_template_path,)
         template_path = [os.path.expanduser(path) for path in _template_path]
@@ -173,6 +179,8 @@ class NotebookWebApplication(web.Application):
             mathjax_url=ipython_app.mathjax_url,
             config=ipython_app.config,
             jinja2_env=env,
+            terminals_available=False,  # Set later if terminals are available
+            profile_dir = ipython_app.profile_dir.location,
         )
 
         # allow custom overrides for the tornado web app.
@@ -180,9 +188,10 @@ class NotebookWebApplication(web.Application):
         return settings
 
     def init_handlers(self, settings):
-        # Load the (URL pattern, handler) tuples for each component.
+        """Load the (URL pattern, handler) tuples for each component."""
+        
+        # Order matters. The first handler to match the URL will handle the request.
         handlers = []
-        handlers.extend(load_handlers('base.handlers'))
         handlers.extend(load_handlers('tree.handlers'))
         handlers.extend(load_handlers('auth.login'))
         handlers.extend(load_handlers('auth.logout'))
@@ -190,6 +199,7 @@ class NotebookWebApplication(web.Application):
         handlers.extend(load_handlers('notebook.handlers'))
         handlers.extend(load_handlers('nbconvert.handlers'))
         handlers.extend(load_handlers('kernelspecs.handlers'))
+        handlers.extend(load_handlers('services.config.handlers'))
         handlers.extend(load_handlers('services.kernels.handlers'))
         handlers.extend(load_handlers('services.contents.handlers'))
         handlers.extend(load_handlers('services.clusters.handlers'))
@@ -199,6 +209,8 @@ class NotebookWebApplication(web.Application):
         handlers.append(
             (r"/nbextensions/(.*)", FileFindHandler, {'path' : settings['nbextensions_path']}),
         )
+        # register base handlers last
+        handlers.extend(load_handlers('base.handlers'))
         # set the URL that will be redirected from `/`
         handlers.append(
             (r'/?', web.RedirectHandler, {
@@ -518,7 +530,20 @@ class NotebookApp(BaseIPythonApplication):
     def static_file_path(self):
         """return extra paths + the default location"""
         return self.extra_static_paths + [DEFAULT_STATIC_FILES_PATH]
-    
+
+    extra_template_paths = List(Unicode, config=True,
+        help="""Extra paths to search for serving jinja templates.
+
+        Can be used to override templates from IPython.html.templates."""
+    )
+    def _extra_template_paths_default(self):
+        return []
+
+    @property
+    def template_file_path(self):
+        """return extra paths + the default locations"""
+        return self.extra_template_paths + DEFAULT_TEMPLATE_PATH_LIST
+
     nbextensions_path = List(Unicode, config=True,
         help="""paths for Javascript extensions. By default, this is just IPYTHONDIR/nbextensions"""
     )
@@ -761,6 +786,14 @@ class NotebookApp(BaseIPythonApplication):
         proto = 'https' if self.certfile else 'http'
         return "%s://%s:%i%s" % (proto, ip, self.port, self.base_url)
 
+    def init_terminals(self):
+        try:
+            from .terminal import initialize
+            initialize(self.web_app)
+            self.web_app.settings['terminals_available'] = True
+        except ImportError as e:
+            self.log.info("Terminals not available (error was %s)", e)
+
     def init_signal(self):
         if not sys.platform.startswith('win'):
             signal.signal(signal.SIGINT, self._handle_sigint)
@@ -840,6 +873,7 @@ class NotebookApp(BaseIPythonApplication):
         self.init_configurables()
         self.init_components()
         self.init_webapp()
+        self.init_terminals()
         self.init_signal()
 
     def cleanup_kernels(self):

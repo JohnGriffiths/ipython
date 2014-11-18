@@ -18,6 +18,7 @@ import collections
 from IPython.core.getipython import get_ipython
 from IPython.kernel.comm import Comm
 from IPython.config import LoggingConfigurable
+from IPython.utils.importstring import import_item
 from IPython.utils.traitlets import Unicode, Dict, Instance, Bool, List, \
     CaselessStrEnum, Tuple, CUnicode, Int, Set
 from IPython.utils.py3compat import string_types
@@ -74,12 +75,26 @@ def _show_traceback(method):
                 ip.showtraceback()
     return m
 
+
+def register(key=None):
+    """Returns a decorator registering a widget class in the widget registry. 
+    If no key is provided, the class name is used as a key. A key is
+    provided for each core IPython widget so that the frontend can use
+    this key regardless of the language of the kernel"""
+    def wrap(widget):
+        l = key if key is not None else widget.__module__ + widget.__name__
+        Widget.widget_types[l] = widget
+        return widget
+    return wrap
+
+
 class Widget(LoggingConfigurable):
     #-------------------------------------------------------------------------
     # Class attributes
     #-------------------------------------------------------------------------
     _widget_construction_callback = None
     widgets = {}
+    widget_types = {}
 
     @staticmethod
     def on_widget_constructed(callback):
@@ -95,9 +110,18 @@ class Widget(LoggingConfigurable):
         if Widget._widget_construction_callback is not None and callable(Widget._widget_construction_callback):
             Widget._widget_construction_callback(widget)
 
+    @staticmethod
+    def handle_comm_opened(comm, msg):
+        """Static method, called when a widget is constructed."""
+        widget_class = import_item(msg['content']['data']['widget_class'])
+        widget = widget_class(comm=comm)
+
+
     #-------------------------------------------------------------------------
     # Traits
     #-------------------------------------------------------------------------
+    _model_module = Unicode(None, allow_none=True, help="""A requirejs module name
+        in which to find _model_name. If empty, look in the global registry.""")
     _model_name = Unicode('WidgetModel', help="""Name of the backbone model 
         registered in the front-end to create and sync this widget with.""")
     _view_module = Unicode(help="""A requirejs module in which to find _view_name.
@@ -142,17 +166,24 @@ class Widget(LoggingConfigurable):
     def open(self):
         """Open a comm to the frontend if one isn't already open."""
         if self.comm is None:
-            args = dict(target_name='ipython.widget', data={ 'model_name': self._model_name })
+            args = dict(target_name='ipython.widget',
+                        data={'model_name': self._model_name,
+                              'model_module': self._model_module})
             if self._model_id is not None:
                 args['comm_id'] = self._model_id
             self.comm = Comm(**args)
-            self._model_id = self.model_id
-            
-            self.comm.on_msg(self._handle_msg)
-            Widget.widgets[self.model_id] = self
 
-            # first update
-            self.send_state()
+    def _comm_changed(self, name, new):
+        """Called when the comm is changed."""
+        if new is None:
+            return
+        self._model_id = self.model_id
+        
+        self.comm.on_msg(self._handle_msg)
+        Widget.widgets[self.model_id] = self
+        
+        # first update
+        self.send_state()
 
     @property
     def model_id(self):
@@ -326,7 +357,7 @@ class Widget(LoggingConfigurable):
     def _handle_custom_msg(self, content):
         """Called when a custom msg is received."""
         self._msg_callbacks(self, content)
-    
+
     def _notify_trait(self, name, old_value, new_value):
         """Called when a property has been changed."""
         # Trigger default traitlet callback machinery.  This allows any user
@@ -337,7 +368,7 @@ class Widget(LoggingConfigurable):
         # Send the state after the user registered callbacks for trait changes
         # have all fired (allows for user to validate values).
         if self.comm is not None and name in self.keys:
-            # Make sure this isn't information that the front-end just sent us.
+        # Make sure this isn't information that the front-end just sent us.
             if self._should_send_property(name, new_value):
                 # Send new state to front-end
                 self.send_state(key=name)

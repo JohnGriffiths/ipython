@@ -424,7 +424,7 @@ class InteractiveShell(SingletonConfigurable):
     display_trap = Instance('IPython.core.display_trap.DisplayTrap')
     extension_manager = Instance('IPython.core.extensions.ExtensionManager')
     payload_manager = Instance('IPython.core.payload.PayloadManager')
-    history_manager = Instance('IPython.core.history.HistoryManager')
+    history_manager = Instance('IPython.core.history.HistoryAccessorBase')
     magics_manager = Instance('IPython.core.magic.MagicsManager')
 
     profile_dir = Instance('IPython.core.application.ProfileDir')
@@ -873,6 +873,8 @@ class InteractiveShell(SingletonConfigurable):
     def init_events(self):
         self.events = EventManager(self, available_events)
 
+        self.events.register("pre_execute", self._clear_warning_registry)
+
     def register_post_execute(self, func):
         """DEPRECATED: Use ip.events.register('post_run_cell', func)
         
@@ -882,6 +884,13 @@ class InteractiveShell(SingletonConfigurable):
              "ip.events.register('post_run_cell', func) instead.")
         self.events.register('post_run_cell', func)
     
+    def _clear_warning_registry(self):
+        # clear the warning registry, so that different code blocks with
+        # overlapping line number ranges don't cause spurious suppression of
+        # warnings (see gh-6611 for details)
+        if "__warningregistry__" in self.user_global_ns:
+            del self.user_global_ns["__warningregistry__"]
+
     #-------------------------------------------------------------------------
     # Things related to the "main" module
     #-------------------------------------------------------------------------
@@ -2343,22 +2352,38 @@ class InteractiveShell(SingletonConfigurable):
                 if path is not None:
                     cmd = '"pushd %s &&"%s' % (path, cmd)
                 cmd = py3compat.unicode_to_str(cmd)
-                ec = os.system(cmd)
+                try:
+                    ec = os.system(cmd)
+                except KeyboardInterrupt:
+                    self.write_err("\nKeyboardInterrupt\n")
+                    ec = -2
         else:
             cmd = py3compat.unicode_to_str(cmd)
-            # Call the cmd using the OS shell, instead of the default /bin/sh, if set.
-            ec = subprocess.call(cmd, shell=True, executable=os.environ.get('SHELL', None))
-            # exit code is positive for program failure, or negative for
-            # terminating signal number.
-            
-            # Interpret ec > 128 as signal
-            # Some shells (csh, fish) don't follow sh/bash conventions for exit codes
+            # For posix the result of the subprocess.call() below is an exit
+            # code, which by convention is zero for success, positive for
+            # program failure.  Exit codes above 128 are reserved for signals,
+            # and the formula for converting a signal to an exit code is usually
+            # signal_number+128.  To more easily differentiate between exit
+            # codes and signals, ipython uses negative numbers.  For instance
+            # since control-c is signal 2 but exit code 130, ipython's
+            # _exit_code variable will read -2.  Note that some shells like
+            # csh and fish don't follow sh/bash conventions for exit codes.
+            executable = os.environ.get('SHELL', None)
+            try:
+                # Use env shell instead of default /bin/sh
+                ec = subprocess.call(cmd, shell=True, executable=executable)
+            except KeyboardInterrupt:
+                # intercept control-C; a long traceback is not useful here
+                self.write_err("\nKeyboardInterrupt\n")
+                ec = 130
             if ec > 128:
                 ec = -(ec - 128)
         
         # We explicitly do NOT return the subprocess status code, because
         # a non-None value would trigger :func:`sys.displayhook` calls.
-        # Instead, we store the exit_code in user_ns.
+        # Instead, we store the exit_code in user_ns.  Note the semantics
+        # of _exit_code: for control-c, _exit_code == -signal.SIGNIT,
+        # but raising SystemExit(_exit_code) will give status 254!
         self.user_ns['_exit_code'] = ec
 
     # use piped system by default, because it is better behaved
@@ -2556,10 +2581,16 @@ class InteractiveShell(SingletonConfigurable):
             silenced for zero status, as it is so common).
         raise_exceptions : bool (False)
             If True raise exceptions everywhere. Meant for testing.
+        shell_futures : bool (False)
+            If True, the code will share future statements with the interactive
+            shell. It will both be affected by previous __future__ imports, and
+            any __future__ imports in the code will affect the shell. If False,
+            __future__ imports are not shared in either direction.
 
         """
         kw.setdefault('exit_ignore', False)
         kw.setdefault('raise_exceptions', False)
+        kw.setdefault('shell_futures', False)
 
         fname = os.path.abspath(os.path.expanduser(fname))
 
@@ -2578,7 +2609,10 @@ class InteractiveShell(SingletonConfigurable):
 
         with prepended_to_syspath(dname):
             try:
-                py3compat.execfile(fname,*where)
+                glob, loc = (where + (None, ))[:2]
+                py3compat.execfile(
+                    fname, glob, loc,
+                    self.compile if kw['shell_futures'] else None)
             except SystemExit as status:
                 # If the call was made with 0 or None exit status (sys.exit(0)
                 # or sys.exit() ), don't bother showing a traceback, as both of
@@ -2599,7 +2633,7 @@ class InteractiveShell(SingletonConfigurable):
                 # tb offset is 2 because we wrap execfile
                 self.showtraceback(tb_offset=2)
 
-    def safe_execfile_ipy(self, fname):
+    def safe_execfile_ipy(self, fname, shell_futures=False):
         """Like safe_execfile, but for .ipy or .ipynb files with IPython syntax.
 
         Parameters
@@ -2607,6 +2641,11 @@ class InteractiveShell(SingletonConfigurable):
         fname : str
             The name of the file to execute.  The filename must have a
             .ipy or .ipynb extension.
+        shell_futures : bool (False)
+            If True, the code will share future statements with the interactive
+            shell. It will both be affected by previous __future__ imports, and
+            any __future__ imports in the code will affect the shell. If False,
+            __future__ imports are not shared in either direction.
         """
         fname = os.path.abspath(os.path.expanduser(fname))
 
@@ -2626,14 +2665,14 @@ class InteractiveShell(SingletonConfigurable):
         def get_cells():
             """generator for sequence of code blocks to run"""
             if fname.endswith('.ipynb'):
-                from IPython.nbformat import current
-                with open(fname) as f:
-                    nb = current.read(f, 'json')
-                    if not nb.worksheets:
+                from IPython.nbformat import read
+                with io_open(fname) as f:
+                    nb = read(f, as_version=4)
+                    if not nb.cells:
                         return
-                    for cell in nb.worksheets[0].cells:
+                    for cell in nb.cells:
                         if cell.cell_type == 'code':
-                            yield cell.input
+                            yield cell.source
             else:
                 with open(fname) as f:
                     yield f.read()
@@ -2645,7 +2684,7 @@ class InteractiveShell(SingletonConfigurable):
                     # raised in user code.  It would be nice if there were
                     # versions of run_cell that did raise, so
                     # we could catch the errors.
-                    self.run_cell(cell, silent=True, shell_futures=False)
+                    self.run_cell(cell, silent=True, shell_futures=shell_futures)
             except:
                 self.showtraceback()
                 warn('Unknown failure executing file: <%s>' % fname)
@@ -3063,7 +3102,15 @@ class InteractiveShell(SingletonConfigurable):
         namespace.
         """
         ns = self.user_ns.copy()
-        ns.update(sys._getframe(depth+1).f_locals)
+        try:
+            frame = sys._getframe(depth+1)
+        except ValueError:
+            # This is thrown if there aren't that many frames on the stack,
+            # e.g. if a script called run_line_magic() directly.
+            pass
+        else:
+            ns.update(frame.f_locals)
+
         try:
             # We have to use .vformat() here, because 'self' is a valid and common
             # name, and expanding **ns for .format() would make it collide with
